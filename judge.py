@@ -2,8 +2,9 @@
 
 Sends a free-form set of RULES and a TEXT and/or image(s) to the model and
 asks for a strict JSON verdict - whether the input complies with every rule,
-and why not. The node layer turns that verdict into a passthrough, a reported
-judgement, or an abort of the workflow.
+and why not. The node layer turns that verdict into a passthrough plus a
+reported judgement; aborting the workflow is the Close node's job, not the
+checker's.
 
 ComfyUI-free at module scope (interrupt check is lazy) for testability.
 """

@@ -3,7 +3,7 @@
 Five nodes built around a single shared model connection:
 
 - :class:`LoadLLMServer`   - start (or reuse a warm) llama-server, emit the connection.
-- :class:`CloseLLMServer`  - tear a connection down to release VRAM.
+- :class:`CloseLLMServer`  - tear a connection down to release VRAM; abort on a failed check.
 - :class:`LLMPrompt`       - generic system + user prompt -> response building block.
 - :class:`PromptEnhancer`  - enhance a prompt, with optional negative prompt.
 - :class:`RulesChecker`    - judge free-form text against free-form rules.
@@ -152,11 +152,17 @@ class LoadLLMServer(io.ComfyNode):
 
 
 class CloseLLMServer(io.ComfyNode):
-    """Stop a llama-server connection to free its VRAM.
+    """Stop a llama-server connection to free its VRAM, and abort on a failed check.
 
     Place this after the last LLM node that uses the connection - typically right
     before a sampling node - so the model's VRAM is released before the sampler
     needs it. Connect the ``llm_server`` output of the last consumer node here.
+
+    Optionally wire a Rules Checker / Image Rules Checker ``judgement`` into the
+    ``judgement`` input. The server is always closed first (releasing its VRAM);
+    if the verdict is a failure (a non-empty judgement) the workflow then aborts
+    with that message. The checker nodes themselves never abort - the close does
+    - so a failed check never leaves the server holding VRAM.
     """
 
     @classmethod
@@ -169,12 +175,19 @@ class CloseLLMServer(io.ComfyNode):
             # runs nodes that are output nodes or upstream of one, and Close has
             # no outputs of its own, so without this it would never run.
             is_output_node=True,
-            description="Stop the llama-server process and release its VRAM. Put this after the last LLM node that uses the connection.",
+            description="Stop the llama-server process and release its VRAM. Put this after the last LLM node that uses the connection. Optionally wire in a checker's judgement to abort the workflow after the server is closed.",
             inputs=[
                 LLMServerType.Input(
                     "llm_server",
                     tooltip="The connection to close. Connect this to the llm_server output of your last LLM node (e.g. the enhancer), not to the Load node - the connection is what makes Close wait for that node to finish first.",
-                )
+                ),
+                io.String.Input(
+                    "judgement",
+                    optional=True,
+                    default="",
+                    multiline=True,
+                    tooltip="Optional: the judgement from a Rules Checker / Image Rules Checker. The server is closed first; when this is non-empty the workflow then aborts with that message. Leave unconnected to just close the server.",
+                ),
             ],
             outputs=[],
             hidden=[io.Hidden.unique_id],
@@ -182,7 +195,12 @@ class CloseLLMServer(io.ComfyNode):
 
     @classmethod
     def execute(cls, **inputs):
+        judgement = (inputs.get("judgement") or "").strip()
+        # Close the server first so its VRAM is released even when we then abort
+        # on a failed check - the checker no longer aborts, the close does.
         close_server(inputs["llm_server"])
+        if judgement:
+            raise RuntimeError(judgement)
         return io.NodeOutput()
 
     @classmethod
@@ -432,9 +450,13 @@ class RulesChecker(io.ComfyNode):
     """Judge free-form text against free-form rules using the LLM.
 
     You write the rules in plain language; the model decides whether the text
-    complies with all of them. On a pass the text is passed through unchanged.
-    On a failure the node either aborts the workflow (default) or reports the
-    model's judgement while still passing the text through.
+    complies with all of them. On a pass the text is passed through unchanged
+    and the ``judgement`` output is empty. On a failure the text still passes
+    through and the model's reason is reported on the ``judgement`` output.
+
+    This node never aborts the workflow - wire the ``judgement`` output into the
+    ``judgement`` input of the Close LLM Server node to abort (after the server
+    is closed and its VRAM is released).
     """
 
     @classmethod
@@ -443,7 +465,7 @@ class RulesChecker(io.ComfyNode):
             node_id="RulesChecker",
             display_name="Rules Checker (LLM Server)",
             category="LlamaServer/LLM",
-            description="Check free-form text against free-form rules with the LLM. Abort the workflow on failure, or report the judgement.",
+            description="Check free-form text against free-form rules with the LLM and report the verdict on the judgement output. Wire the judgement into Close LLM Server to abort on failure.",
             inputs=[
                 LLMServerType.Input(
                     "llm_server", tooltip="The server connection from Load LLM Server."
@@ -463,12 +485,6 @@ class RulesChecker(io.ComfyNode):
                     dynamic_prompts=True,
                     placeholder="The enhanced prompt must describe the same character as the original, and must not add new people.",
                     tooltip="Free-form rules the text must satisfy, in plain language. Leave empty to bypass.",
-                ),
-                io.Boolean.Input(
-                    "abort_on_fail",
-                    optional=True,
-                    default=True,
-                    tooltip="When true, a failed check aborts the workflow. When false, the text still passes through and the judgement is reported on the 'judgement' output.",
                 ),
                 io.Int.Input(
                     "seed",
@@ -496,7 +512,7 @@ class RulesChecker(io.ComfyNode):
                 ),
                 io.String.Output(
                     "judgement",
-                    tooltip="Empty on pass. The model's reason when the check fails (and abort_on_fail is false).",
+                    tooltip="Empty on pass (and on bypass). The failure message when the check fails; wire this into the 'judgement' input of Close LLM Server to abort the workflow after the server is closed.",
                 ),
                 LLMServerType.Output(
                     "llm_server",
@@ -522,14 +538,18 @@ class RulesChecker(io.ComfyNode):
             temperature=inputs.get("temperature"),
         )
         if not verdict.ok:
-            raise RuntimeError(
-                f"Rules check could not obtain a verdict from the LLM: {verdict.reason}"
+            # Infrastructure failure: no usable verdict. Report it as a
+            # non-empty judgement (not a pass) so the Close node closes the
+            # server and aborts, rather than passing a check we could not run.
+            return io.NodeOutput(
+                text,
+                f"Rules check error: could not obtain a verdict from the LLM: {verdict.reason}",
+                server,
             )
         if verdict.passed:
             return io.NodeOutput(text, "", server)
-        if bool(inputs.get("abort_on_fail", True)):
-            raise RuntimeError(f"Rules check failed: {verdict.reason}")
-        return io.NodeOutput(text, verdict.reason, server)
+        # Never abort here - the Close node does, after the server is closed.
+        return io.NodeOutput(text, f"Rules check failed: {verdict.reason}", server)
 
 
 NODE_CLASS_MAPPINGS = {

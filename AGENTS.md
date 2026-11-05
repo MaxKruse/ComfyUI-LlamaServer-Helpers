@@ -119,13 +119,17 @@ never hands out a stale (closed) connection.
   `ctx_size` (default 20480), `mmproj_path` (optional), `extra_server_args`
   (optional), `startup_timeout` (optional, default 120). out: `llm_server`.
   Raises `ValueError` on a bad path, `RuntimeError` if the server fails to start.
-- **CloseLLMServer** - in: `llm_server`. out: none. An output node
+- **CloseLLMServer** - in: `llm_server`, `judgement` (optional string). out:
+  none. An output node
   (`is_output_node=True`) with a NaN cache fingerprint (`fingerprint_inputs`
   returns `float("NaN")`): the executor only schedules output nodes (or their
   upstream dependencies), so without the flag a no-output sink is never reached
   (and right-click -> Run fails with "Prompt has no outputs"); the NaN
   fingerprint forces a re-run every time because closing is a side effect, never
-  a cached no-op.
+  a cached no-op. Closes the server **first** (releasing VRAM), then, if
+  `judgement` is non-empty (a failed checker verdict), **raises**
+  `RuntimeError(judgement)` - this is where the rules checkers' abort lives, so
+  a failed check never leaves the server holding VRAM.
 - **LLMPrompt** - in: `llm_server`, `system_prompt` (optional), `user_prompt`,
   `seed`, `temperature` (optional), `max_tokens` (optional). out: `response`,
   `llm_server`. Empty `user_prompt` bypasses (returns `""`). A `None` response
@@ -160,23 +164,27 @@ never hands out a stale (closed) connection.
   `MODEL_ENHANCER_NODES` maps node_id -> built class. The classes are built via
   `type()` (dynamic class creation); they are ordinary `io.ComfyNode`
   subclasses, nothing else is dynamic.
-- **RulesChecker** - in: `llm_server`, `text`, `rules`, `abort_on_fail` (default
-  True), `seed`, `temperature`. out: `text_out`, `judgement`, `llm_server`.
-  Empty text OR empty rules bypass (passes text through). `ok=False` (no
-  parseable verdict - an infra failure) **raises**. `fail + abort_on_fail`
-  **raises** `RuntimeError("Rules check failed: ...")`; `fail + not abort_on_fail`
-  returns the judgement on the `judgement` output.
+- **RulesChecker** - in: `llm_server`, `text`, `rules`, `seed`,
+  `temperature`. out: `text_out`, `judgement`, `llm_server`.
+  Empty text OR empty rules bypass (passes text through). The node **never
+  aborts**: `ok=False` (no parseable verdict - an infra failure) reports
+  `"Rules check error: ..."` on `judgement` (fail-closed, not a pass); `fail`
+  reports `"Rules check failed: <reason>"`; `pass` reports `""`. Wire
+  `judgement` into `CloseLLMServer` to abort after the server closes.
 - **ImageRulesChecker** - in: `llm_server`, `rules` (optional), `images`
-  (Autogrow, 0-9, VAE-decoded tensors), `abort_on_fail` (default True), `seed`,
+  (Autogrow, 0-9, VAE-decoded tensors), `seed`,
   `temperature`. out: `judgement`, `llm_server` (no image passthrough - it is a
   pure gate; fan the image to the save/next node separately). An output node
   (`is_output_node=True`) with a NaN cache fingerprint, so an unconnected gate
   is still scheduled and always re-runs (a cached no-op gate would silently
   pass). No images OR
-  empty rules bypass (returns `("", server)`). `ok=False` **raises** `RuntimeError`
-  (mentions the vision/mmproj requirement). `fail + abort_on_fail` **raises**
-  `RuntimeError("Image rules check failed: ...")`; `fail + not abort_on_fail`
-  returns the reason on `judgement`. Calls `check_rules(server, "", rules, ..., images=...)`.
+  empty rules bypass (returns `("", server)`). The node **never aborts**:
+  `ok=False` (no parseable verdict - an infra failure) reports
+  `"Image rules check error: ..."` (mentions the vision/mmproj requirement,
+  fail-closed, not a pass); `fail` reports
+  `"Image rules check failed: <reason>"`; `pass` reports `""`. Wire `judgement`
+  into `CloseLLMServer` to abort after the server closes. Calls
+  `check_rules(server, "", rules, ..., images=...)`.
 
 The Enhancer/Rules quality-gate and verdict logic lives in `enhance.py` /
 `judge.py`, not in the nodes - the node just maps inputs and maps the result to
@@ -193,8 +201,10 @@ outputs.
   node_base only needs `comfy_api`); `presets.py` imports only `pathlib`
   (to load the mirrored `.txt` dialect guides from `presets/`).
 - **Failure semantics are per-node and intentional** (see above). Do not make
-  `LLMPrompt`/`RulesChecker`/`ImageRulesChecker` silent on failure, or make
-  `PromptEnhancer` (or any per-model enhancer) raise.
+  `LLMPrompt` silent on failure, or make `PromptEnhancer` (or any per-model
+  enhancer) raise. `RulesChecker` / `ImageRulesChecker` never raise on a
+  verdict - they report it on `judgement` (fail-closed on `ok=False`);
+  aborting is the Close node's job, after the server is closed.
 - Keep files under ~500 lines and functions under ~50 lines; keep comments
   sparse (only the "why").
 - No internet access except the local `llama-server` on `127.0.0.1`; the only

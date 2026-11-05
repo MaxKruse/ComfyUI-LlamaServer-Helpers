@@ -186,9 +186,13 @@ class ImageRulesChecker(io.ComfyNode):
     plain language ("the character has no watermark", "exactly one person"); the
     model looks at the image(s) and decides whether they comply. Wire the
     VAE-decoded image(s) in and the gate runs before the image is saved. On a
-    failure the node either aborts the workflow (default) or reports the model's
-    judgement while the workflow continues. Load the server with an ``mmproj``
-    path (and a vision-capable model) for this node to work.
+    pass the ``judgement`` output is empty; on a failure the model's reason is
+    reported there. Load the server with an ``mmproj`` path (and a vision-capable
+    model) for this node to work.
+
+    This node never aborts the workflow - wire the ``judgement`` output into the
+    ``judgement`` input of the Close LLM Server node to abort (after the server
+    is closed and its VRAM is released).
     """
 
     @classmethod
@@ -203,7 +207,7 @@ class ImageRulesChecker(io.ComfyNode):
             # their upstream dependencies) - without this an unconnected gate
             # would silently never run.
             is_output_node=True,
-            description="Check generated image(s) against free-form rules with a multimodal LLM. Abort the workflow on failure, or report the judgement.",
+            description="Check generated image(s) against free-form rules with a multimodal LLM and report the verdict on the judgement output. Wire the judgement into Close LLM Server to abort on failure.",
             inputs=[
                 LLMServerType.Input(
                     "llm_server", tooltip="The server connection from Load LLM Server."
@@ -227,12 +231,6 @@ class ImageRulesChecker(io.ComfyNode):
                     ),
                     tooltip="The generated image(s) to check. Leave all unconnected to bypass.",
                 ),
-                io.Boolean.Input(
-                    "abort_on_fail",
-                    optional=True,
-                    default=True,
-                    tooltip="When true, a failed check aborts the workflow. When false, the workflow continues and the judgement is reported on the 'judgement' output.",
-                ),
                 io.Int.Input(
                     "seed",
                     default=0,
@@ -255,7 +253,7 @@ class ImageRulesChecker(io.ComfyNode):
             outputs=[
                 io.String.Output(
                     "judgement",
-                    tooltip="Empty on pass (and on bypass). The model's reason when the check fails and abort_on_fail is false.",
+                    tooltip="Empty on pass (and on bypass). The failure message when the check fails; wire this into the 'judgement' input of Close LLM Server to abort the workflow after the server is closed.",
                 ),
                 LLMServerType.Output(
                     "llm_server",
@@ -282,15 +280,18 @@ class ImageRulesChecker(io.ComfyNode):
             images=images,
         )
         if not verdict.ok:
-            raise RuntimeError(
-                f"Image rules check could not obtain a verdict from the LLM: {verdict.reason}. "
-                "Make sure the server was loaded with a vision model and an mmproj path."
+            # Infrastructure failure: no usable verdict. Report it as a
+            # non-empty judgement (not a pass) so the Close node closes the
+            # server and aborts, rather than passing a check we could not run.
+            return io.NodeOutput(
+                f"Image rules check error: could not obtain a verdict from the LLM: {verdict.reason}. "
+                "Make sure the server was loaded with a vision model and an mmproj path.",
+                server,
             )
         if verdict.passed:
             return io.NodeOutput("", server)
-        if bool(inputs.get("abort_on_fail", True)):
-            raise RuntimeError(f"Image rules check failed: {verdict.reason}")
-        return io.NodeOutput(verdict.reason, server)
+        # Never abort here - the Close node does, after the server is closed.
+        return io.NodeOutput(f"Image rules check failed: {verdict.reason}", server)
 
     @classmethod
     def fingerprint_inputs(cls, **inputs):

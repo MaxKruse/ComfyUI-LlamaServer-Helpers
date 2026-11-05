@@ -26,15 +26,15 @@ The nodes share **one** server connection per model: start it once with **Load L
 | Node | What it does |
 |---|---|
 | **Load LLM Server** | Starts (or reuses a warm) `llama-server` for a model + context size + flags, and emits the `llm_server` connection. |
-| **Close LLM Server** | Stops the server and frees its VRAM. Put it after the last LLM node. |
+| **Close LLM Server** | Stops the server and frees its VRAM. Put it after the last LLM node. Optionally takes a checker's `judgement`: the server is closed first, and the workflow aborts if the check failed. |
 | **LLM Prompt** | Generic building block: send a system + a user prompt, get the response back. |
 | **Prompt Enhancer (LLM Server)** | Rewrites and expands a generation prompt, optionally producing a negative prompt too. |
 | **Flux / Krea 2 / Z-Image / Qwen-Image / Qwen-Image 2.1 Edit / MOSS-Image SFT Prompt Enhancer (LLM Server)** | One enhancer per target model: same as the Prompt Enhancer, but the system prompt is pre-filled with that model's documented prompt dialect (flowing prose for FLUX, a structured brief for Z-Image, and so on) and the quality-gate defaults match it. Use the model-matched node when you know which model the prompt feeds. The Qwen-Image 2.1 Edit node is the image-editing (i2i) variant: feed it the image to edit on `ref_images` and write the edit you want. |
 | **MiniMax H3 / MiniMax H3 R2V / MiniMax H3 Eros Max / Wan 2.2 / LTX 2.3 10Eros / LTX 2.5 Prompt Enhancer (LLM Server)** | The video-model variants, under the `LlamaServer/Video` category: they produce audiovisual scripts (MiniMax H3), full reference-to-video rewrites (MiniMax H3 R2V / Eros Max), and motion-and-camera scripts (Wan 2.2, LTX) instead of image prompts. The i2v models (LTX, Wan 2.2) take the source image on `ref_images`; the R2V models take any reference images there too. |
-| **Rules Checker (LLM Server)** | Checks free-form text against free-form rules; aborts the workflow on failure, or reports the model's judgement. |
-| **Image Rules Checker (LLM Server)** | Checks generated image(s) against free-form rules using a vision model (for example: "no watermark", "exactly one person"); aborts the workflow on failure, or reports the model's judgement. Requires the server to be loaded with a vision model and an `mmproj` path. |
+| **Rules Checker (LLM Server)** | Checks free-form text against free-form rules and reports the verdict on its `judgement` output. It never aborts by itself - wire that `judgement` into **Close LLM Server** to abort after the server is freed. |
+| **Image Rules Checker (LLM Server)** | Checks generated image(s) against free-form rules using a vision model (for example: "no watermark", "exactly one person") and reports the verdict on its `judgement` output. It never aborts by itself - wire that `judgement` into **Close LLM Server** to abort after the server is freed. Requires the server to be loaded with a vision model and an `mmproj` path. |
 
-Every LLM node takes the `llm_server` connection in and passes it straight back out, so a server threads through the workflow: `Load → LLM node(s) → Close`. The Close node is therefore guaranteed to run after the nodes that used the server.
+Every LLM node takes the `llm_server` connection in and passes it straight back out, so a server threads through the workflow: `Load → LLM node(s) → Close`. The Close node is therefore guaranteed to run after the nodes that used the server. To make a failed check abort the run, wire the checker's `judgement` output into Close's `judgement` input: Close frees the server first, then aborts if the verdict is a failure.
 
 ## How to run
 
@@ -48,7 +48,7 @@ Every LLM node takes the `llm_server` connection in and passes it straight back 
 - One server is kept per distinct model configuration (model, context size, projector, flags). Loading a *different* configuration starts a *second* server, and each holds its own VRAM.
 - The Enhancer and Rules Checker ask the **model** to make the call, so the quality of the result is limited by the model you load. Small local models can give weak enhancements or unreliable verdicts.
 - If the Enhancer can't get an acceptable result after a few retries, it falls back to passing your original prompt through unchanged so a model hiccup doesn't kill the queue.
-- The Rules Checker aborts (or reports) based on the model's judgement; a "pass" is the model's best guess, not a guarantee.
+- The Rules Checker reports its verdict on the `judgement` output (it does not abort on its own); wire that into Close LLM Server to abort. Either way a "pass" is the model's best guess, not a guarantee.
 - The Image Rules Checker needs a **vision-capable** model plus an `mmproj` path on the Load node; a text-only model cannot look at the images. Like the text checker, its verdict is the model's best guess - for hard guarantees, keep the rules specific and observable.
 - The per-model enhancers encode each model's *documented* dialect; model generations still vary, and a model the list does not cover should use the generic Prompt Enhancer with your own system prompt.
 

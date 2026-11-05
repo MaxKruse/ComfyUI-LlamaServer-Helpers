@@ -2,7 +2,7 @@
  "id": "03d0a732-b28c-459f-adcf-a5ce6460fc17",
  "revision": 0,
  "last_node_id": 5,
- "last_link_id": 4,
+ "last_link_id": 5,
  "nodes": [
   {
    "id": 1,
@@ -272,16 +272,6 @@
      "shape": 7
     },
     {
-     "localized_name": "abort_on_fail",
-     "name": "abort_on_fail",
-     "type": "BOOLEAN",
-     "link": null,
-     "widget": {
-      "name": "abort_on_fail"
-     },
-     "shape": 7
-    },
-    {
      "localized_name": "seed",
      "name": "seed",
      "type": "INT",
@@ -306,7 +296,9 @@
      "localized_name": "judgement",
      "name": "judgement",
      "type": "STRING",
-     "links": null
+     "links": [
+      5
+     ]
     },
     {
      "localized_name": "llm_server",
@@ -320,13 +312,11 @@
    },
    "widgets_values": [
     "The image must show exactly one person, fully visible. There must be no text, watermark, signature, or logo anywhere in the image.",
-    true,
     0,
     null
    ],
    "widgets_values_named": {
     "rules": "The image must show exactly one person, fully visible. There must be no text, watermark, signature, or logo anywhere in the image.",
-    "abort_on_fail": true,
     "seed": 0,
     "temperature": null
    }
@@ -387,6 +377,12 @@
      "name": "llm_server",
      "type": "LLMSERVER",
      "link": 4
+    },
+    {
+     "localized_name": "judgement",
+     "name": "judgement",
+     "type": "STRING",
+     "link": 5
     }
    ],
    "outputs": [],
@@ -429,6 +425,14 @@
    5,
    0,
    "LLMSERVER"
+  ],
+  [
+   5,
+   3,
+   0,
+   5,
+   1,
+   "STRING"
   ]
  ],
  "groups": [],

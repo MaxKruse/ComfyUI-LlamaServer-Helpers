@@ -2,13 +2,11 @@
 
 The LLM logic is mocked out (enhance_prompt / check_rules) so these tests
 exercise only the node layer: the per-model defaults wired from the preset
-specs, bypass handling, output shapes, abort behaviour, and the ImageRulesChecker
-gate semantics.
+specs, bypass handling, output shapes, judgement reporting, and the
+ImageRulesChecker gate semantics.
 """
 
 from pathlib import Path
-
-import pytest
 
 import model_nodes
 from enhance import EnhanceResult
@@ -240,20 +238,9 @@ def test_image_qa_pass(monkeypatch, make_fake_server):
     assert tuple(out) == ("", srv)
 
 
-def test_image_qa_fail_aborts(monkeypatch, make_fake_server):
-    srv = make_fake_server()
-    monkeypatch.setattr(
-        model_nodes,
-        "check_rules",
-        lambda *a, **k: CheckResult(False, "watermark visible"),
-    )
-    with pytest.raises(RuntimeError, match="watermark visible"):
-        model_nodes.ImageRulesChecker.execute(
-            llm_server=srv, images={"image_0": object()}, rules="no watermark"
-        )
-
-
-def test_image_qa_fail_reports(monkeypatch, make_fake_server):
+def test_image_qa_fail_reports_judgement(monkeypatch, make_fake_server):
+    # The checker never aborts: a failed check is reported on the judgement
+    # output; the Close node is what aborts.
     srv = make_fake_server()
     monkeypatch.setattr(
         model_nodes,
@@ -261,25 +248,27 @@ def test_image_qa_fail_reports(monkeypatch, make_fake_server):
         lambda *a, **k: CheckResult(False, "watermark visible"),
     )
     out = model_nodes.ImageRulesChecker.execute(
-        llm_server=srv,
-        images={"image_0": object()},
-        rules="no watermark",
-        abort_on_fail=False,
+        llm_server=srv, images={"image_0": object()}, rules="no watermark"
     )
-    assert tuple(out) == ("watermark visible", srv)
+    assert tuple(out) == ("Image rules check failed: watermark visible", srv)
 
 
-def test_image_qa_no_verdict_raises(monkeypatch, make_fake_server):
+def test_image_qa_no_verdict_reports_error(monkeypatch, make_fake_server):
+    # An infra failure (no parseable verdict) is reported as a non-empty
+    # judgement (fail-closed, not a pass) and still mentions the mmproj.
     srv = make_fake_server()
     monkeypatch.setattr(
         model_nodes,
         "check_rules",
         lambda *a, **k: CheckResult(False, "no valid verdict", ok=False),
     )
-    with pytest.raises(RuntimeError, match="verdict"):
-        model_nodes.ImageRulesChecker.execute(
-            llm_server=srv, images={"image_0": object()}, rules="no watermark"
-        )
+    out = model_nodes.ImageRulesChecker.execute(
+        llm_server=srv, images={"image_0": object()}, rules="no watermark"
+    )
+    judgement, out_srv = tuple(out)
+    assert judgement.startswith("Image rules check error: could not obtain a verdict")
+    assert "mmproj" in judgement
+    assert out_srv is srv
 
 
 def test_image_qa_forwards_images(monkeypatch, make_fake_server):

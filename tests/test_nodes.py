@@ -2,8 +2,8 @@
 
 The LLM/HTTP logic is mocked out (chat_completion_interruptible / enhance_prompt
 / check_rules / close_server / get_or_start_server) so these tests exercise only
-the nodes' own logic: bypass handling, output shapes, abort behaviour, and error
-paths.
+the nodes' own logic: bypass handling, output shapes, judgement reporting, the
+Close node's close-then-abort behaviour, and error paths.
 """
 
 import math
@@ -188,37 +188,30 @@ def test_rules_pass(monkeypatch, make_fake_server):
     assert tuple(out) == ("text", "", srv)
 
 
-def test_rules_fail_aborts(monkeypatch, make_fake_server):
+def test_rules_fail_reports_judgement(monkeypatch, make_fake_server):
+    # The checker never aborts: a failed check is reported on the judgement
+    # output, and the text still passes through.
     srv = make_fake_server()
     monkeypatch.setattr(
         nodes, "check_rules", lambda *a, **k: CheckResult(False, "breaks rule", ok=True)
     )
-    with pytest.raises(RuntimeError, match="Rules check failed"):
-        nodes.RulesChecker.execute(
-            llm_server=srv, text="text", rules="rule", abort_on_fail=True
-        )
+    out = nodes.RulesChecker.execute(llm_server=srv, text="text", rules="rule")
+    assert tuple(out) == ("text", "Rules check failed: breaks rule", srv)
 
 
-def test_rules_fail_reports(monkeypatch, make_fake_server):
-    srv = make_fake_server()
-    monkeypatch.setattr(
-        nodes, "check_rules", lambda *a, **k: CheckResult(False, "breaks rule", ok=True)
-    )
-    out = nodes.RulesChecker.execute(
-        llm_server=srv, text="text", rules="rule", abort_on_fail=False
-    )
-    assert tuple(out) == ("text", "breaks rule", srv)
-
-
-def test_rules_no_verdict_raises(monkeypatch, make_fake_server):
+def test_rules_no_verdict_reports_error(monkeypatch, make_fake_server):
+    # An infra failure (no parseable verdict) is reported as a non-empty
+    # judgement (fail-closed, not a pass) - the Close node is what aborts.
     srv = make_fake_server()
     monkeypatch.setattr(
         nodes, "check_rules", lambda *a, **k: CheckResult(False, "no verdict", ok=False)
     )
-    with pytest.raises(RuntimeError, match="could not obtain a verdict"):
-        nodes.RulesChecker.execute(
-            llm_server=srv, text="text", rules="rule", abort_on_fail=False
-        )
+    out = nodes.RulesChecker.execute(llm_server=srv, text="text", rules="rule")
+    assert tuple(out) == (
+        "text",
+        "Rules check error: could not obtain a verdict from the LLM: no verdict",
+        srv,
+    )
 
 
 # --- CloseLLMServer --------------------------------------------------------
@@ -235,6 +228,37 @@ def test_close_server_called(monkeypatch, make_fake_server):
     out = nodes.CloseLLMServer.execute(llm_server=srv)
     assert closed["srv"] is srv
     assert tuple(out) == ()
+
+
+def test_close_ignores_blank_judgement(monkeypatch, make_fake_server):
+    # An empty / whitespace-only judgement is no abort: just close the server.
+    srv = make_fake_server()
+    closed = {}
+    monkeypatch.setattr(nodes, "close_server", lambda s: closed.update(srv=s))
+    out = nodes.CloseLLMServer.execute(llm_server=srv, judgement="   ")
+    assert closed["srv"] is srv
+    assert tuple(out) == ()
+
+
+def test_close_aborts_on_judgement(monkeypatch, make_fake_server):
+    # A non-empty judgement (a failed check) aborts the workflow.
+    srv = make_fake_server()
+    monkeypatch.setattr(nodes, "close_server", lambda s: None)
+    with pytest.raises(RuntimeError, match="Rules check failed: breaks rule"):
+        nodes.CloseLLMServer.execute(
+            llm_server=srv, judgement="Rules check failed: breaks rule"
+        )
+
+
+def test_close_closes_before_aborting(monkeypatch, make_fake_server):
+    # The server must be released even when the close then aborts - that is
+    # the whole point of moving the abort out of the checker.
+    srv = make_fake_server()
+    order = []
+    monkeypatch.setattr(nodes, "close_server", lambda s: order.append("closed"))
+    with pytest.raises(RuntimeError):
+        nodes.CloseLLMServer.execute(llm_server=srv, judgement="Rules check failed: x")
+    assert order == ["closed"]
 
 
 # --- LoadLLMServer ---------------------------------------------------------
