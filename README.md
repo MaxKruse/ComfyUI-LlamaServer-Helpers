@@ -13,7 +13,7 @@ The nodes share **one** server connection per model: start it once with **Load L
   - checking free-form text against free-form rules,
   - checking generated image(s) against free-form rules with a vision model,
   - and a plain system + user prompt in, response out.
-- Includes a prompt enhancer per target model (FLUX, SDXL, SD 1.5, Krea 2, Chroma, Z-Image, Qwen-Image, MiniMax H3, Wan 2.2), each pre-filled with that model's documented prompting dialect.
+- Includes a prompt enhancer per target model (FLUX, SDXL, SD 1.5, Krea 2, Chroma, Z-Image, Qwen-Image, Qwen-Image 2.1 Edit, MOSS-Image SFT, MiniMax H3, MiniMax H3 R2V, MiniMax H3 Eros Max, Wan 2.2, LTX 2.3 10Eros, LTX 2.5), each pre-filled with that model's documented prompting dialect.
 
 ## What you need
 
@@ -29,8 +29,8 @@ The nodes share **one** server connection per model: start it once with **Load L
 | **Close LLM Server** | Stops the server and frees its VRAM. Put it after the last LLM node. |
 | **LLM Prompt** | Generic building block: send a system + a user prompt, get the response back. |
 | **Prompt Enhancer (LLM Server)** | Rewrites and expands a generation prompt, optionally producing a negative prompt too. |
-| **Flux / SDXL / SD1.5 / Krea 2 / Chroma / Z-Image / Qwen-Image Prompt Enhancer (LLM Server)** | One enhancer per target model: same as the Prompt Enhancer, but the system prompt is pre-filled with that model's documented prompt dialect (prose for FLUX, booru tags for SD 1.5, and so on) and the quality-gate defaults match it. Use the model-matched node when you know which model the prompt feeds. |
-| **MiniMax H3 / Wan 2.2 Prompt Enhancer (LLM Server)** | The video-model variants, under the `LlamaServer/Video` category: they produce full audiovisual scripts (MiniMax H3) and motion-and-camera scripts (Wan 2.2) instead of image prompts. |
+| **Flux / SDXL / SD1.5 / Krea 2 / Chroma / Z-Image / Qwen-Image / Qwen-Image 2.1 Edit / MOSS-Image SFT Prompt Enhancer (LLM Server)** | One enhancer per target model: same as the Prompt Enhancer, but the system prompt is pre-filled with that model's documented prompt dialect (prose for FLUX, booru tags for SD 1.5, and so on) and the quality-gate defaults match it. Use the model-matched node when you know which model the prompt feeds. The Qwen-Image 2.1 Edit node is the image-editing (i2i) variant: feed it the image to edit on `ref_images` and write the edit you want. |
+| **MiniMax H3 / MiniMax H3 R2V / MiniMax H3 Eros Max / Wan 2.2 / LTX 2.3 10Eros / LTX 2.5 Prompt Enhancer (LLM Server)** | The video-model variants, under the `LlamaServer/Video` category: they produce audiovisual scripts (MiniMax H3), full reference-to-video rewrites (MiniMax H3 R2V / Eros Max), and motion-and-camera scripts (Wan 2.2, LTX) instead of image prompts. The i2v models (LTX, Wan 2.2) take the source image on `ref_images`; the R2V models take any reference images there too. |
 | **Rules Checker (LLM Server)** | Checks free-form text against free-form rules; aborts the workflow on failure, or reports the model's judgement. |
 | **Image Rules Checker (LLM Server)** | Checks generated image(s) against free-form rules using a vision model (for example: "no watermark", "exactly one person"); aborts the workflow on failure, or reports the model's judgement. Requires the server to be loaded with a vision model and an `mmproj` path. |
 
