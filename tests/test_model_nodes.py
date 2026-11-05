@@ -6,12 +6,27 @@ specs, bypass handling, output shapes, abort behaviour, and the ImageRulesChecke
 gate semantics.
 """
 
+from pathlib import Path
+
 import pytest
 
 import model_nodes
 from enhance import EnhanceResult
 from judge import CheckResult
 from presets import ENHANCER_SPECS
+
+PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
+
+# Model dialects mirrored verbatim from ../ComfyUI-PromptEnhancer: node_id ->
+# preset filename. These six were missing from the first mirror pass.
+MIRRORED_PRESETS = {
+    "MossImagePromptEnhancer": "moss-image-sft-t2i.txt",
+    "QwenImageEditPromptEnhancer": "qwenimage2.1-i2i.txt",
+    "Ltx23PromptEnhancer": "ltx2.3-10eros-i2v.txt",
+    "Ltx25PromptEnhancer": "ltx2.5-i2v.txt",
+    "MiniMaxH3R2VPromptEnhancer": "minimax-h3-r2v.txt",
+    "MiniMaxH3ErosMaxPromptEnhancer": "minimax-h3-eros-max-r2v.txt",
+}
 
 
 def _spec(node_id: str):
@@ -43,7 +58,45 @@ def test_negative_prompt_supported_models():
 
 def test_video_specs_use_video_category():
     video = {s.node_id for s in ENHANCER_SPECS if s.category == "LlamaServer/Video"}
-    assert video == {"MiniMaxH3PromptEnhancer", "Wan22PromptEnhancer"}
+    assert video == {
+        "MiniMaxH3PromptEnhancer",
+        "Wan22PromptEnhancer",
+        "Ltx23PromptEnhancer",
+        "Ltx25PromptEnhancer",
+        "MiniMaxH3R2VPromptEnhancer",
+        "MiniMaxH3ErosMaxPromptEnhancer",
+    }
+
+
+def test_mirrored_preset_specs_present():
+    ids = {s.node_id for s in ENHANCER_SPECS}
+    for node_id in MIRRORED_PRESETS:
+        assert node_id in ids, f"{node_id} missing from ENHANCER_SPECS"
+
+
+def test_mirrored_preset_systems_match_preset_files():
+    for node_id, filename in MIRRORED_PRESETS.items():
+        spec = _spec(node_id)
+        text = (PRESETS_DIR / filename).read_text(encoding="utf-8").strip()
+        assert spec.system_prompt == text, (
+            f"{node_id} system prompt differs from {filename}"
+        )
+
+
+def test_mirrored_preset_categories_and_defaults():
+    expected = {
+        "MossImagePromptEnhancer": ("LlamaServer/LLM", 40),
+        "QwenImageEditPromptEnhancer": ("LlamaServer/LLM", 25),
+        "Ltx23PromptEnhancer": ("LlamaServer/Video", 60),
+        "Ltx25PromptEnhancer": ("LlamaServer/Video", 40),
+        "MiniMaxH3R2VPromptEnhancer": ("LlamaServer/Video", 50),
+        "MiniMaxH3ErosMaxPromptEnhancer": ("LlamaServer/Video", 50),
+    }
+    for node_id, (category, min_words) in expected.items():
+        spec = _spec(node_id)
+        assert spec.category == category
+        assert spec.default_min_words == min_words
+        assert spec.default_generate_negative is False
 
 
 # --- registration ------------------------------------------------------------
