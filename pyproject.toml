@@ -1,0 +1,11 @@
+[project]
+name = "comfyui-llamaserver-helpers"
+version = "0.1.0"
+description = "Shared llama-server (llama.cpp) LLM helper nodes for ComfyUI."
+authors = [{ name = "Maximilian Kruse" }]
+requires-python = ">=3.10"
+
+# No [build-system] and no [project] dependencies on purpose: this is a
+# drop-in ComfyUI custom node (loaded from the folder, not pip-installed) and
+# it uses only the Python standard library. Lint rules are inherited from the
+# ComfyUI root pyproject.toml.

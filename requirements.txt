@@ -1,0 +1,10 @@
+# No runtime dependencies.
+#
+# These nodes use only the Python standard library, on top of what ComfyUI
+# already ships (comfy_api, and torch/numpy/Pillow which ComfyUI requires).
+# Nothing is pip-installed by this package.
+#
+# You do need, separately, a llama.cpp build that provides the `llama-server`
+# executable (it loads .gguf models and serves the OpenAI-compatible
+# /v1/chat/completions endpoint). Either put it on your PATH, or type the
+# absolute path to the binary into the "Load LLM Server" node.

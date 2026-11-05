@@ -1,0 +1,186 @@
+# ComfyUI LlamaServer Helpers - Agent Guide
+
+Technical documentation for agents working on this custom node. The user-facing
+view (what/limits/run/help) is in `README.md`; this file is where the design
+lives.
+
+## What this is
+
+A ComfyUI custom node that starts a local llama.cpp `llama-server` and exposes
+five nodes that all share **one** connection to that model:
+
+- `LoadLLMServer` - start (or reuse a warm) server, emit the connection.
+- `CloseLLMServer` - stop the server, free VRAM.
+- `LLMPrompt` - generic system + user prompt -> response.
+- `PromptEnhancer` - enhance a prompt (+ optional negative prompt).
+- `RulesChecker` - judge free-form text against free-form rules.
+
+The core UX win over a cold-start-per-run design: the server is started once and
+kept **warm** for the ComfyUI session, so repeated queue items reuse it instead
+of re-loading the model each time.
+
+## Layering
+
+Two layers, split deliberately:
+
+- **Pure-logic modules** (`server.py`, `client.py`, `enhance.py`, `judge.py`)
+  import **no** `comfy_api`. They only need the Python standard library, plus
+  lazy, `try/except ImportError` imports of `comfy.model_management` inside
+  `check_interrupt()` / `free_gpu_memory()` (no-op outside ComfyUI). This keeps
+  them unit-testable without the ComfyUI runtime on the path.
+- **Comfy-dependent modules** (`node_base.py`, `nodes.py`) import
+  `comfy_api.latest.io` at module scope and are only importable inside the
+  ComfyUI runtime (or with it on the path in tests).
+
+Do not add `comfy_api` imports to the pure-logic modules, and do not add a new
+third-party dependency (the node is stdlib-only by design).
+
+## File layout
+
+| File | Role |
+|---|---|
+| `__init__.py` | Registers `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` via a `try: from .nodes import ... except ImportError:` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
+| `nodes.py` | The five `io.ComfyNode` classes, the mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
+| `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
+| `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `kill_server`); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `atexit`). |
+| `client.py` | HTTP chat client: `chat_completion`, `chat_completion_interruptible`, `build_user_content`, `_payload`, image-to-base64-JPEG, context-error detection, timing log. |
+| `enhance.py` | `enhance_prompt` + the quality gate (`is_good_prompt`: min words, refusal patterns, Jaccard echo) + lenient JSON parsing. |
+| `judge.py` | `check_rules` + `CheckResult` + verdict parsing. |
+| `tests/` | `conftest.py` (path setup + `FakeProc` + fake-server fixtures) and one test file per logic module + the node layer. |
+
+## The meta-object: `LLMServer`
+
+A `dataclass` in `server.py` - the "meta-object" handed from `LoadLLMServer` to
+every consumer. Fields (in order): `base_url`, `model_name`, `proc`, `port`,
+`model_path`, `ctx_size`, `server_path=""`, `mmproj_path=""`, `extra_flags=""`,
+`started_at` (monotonic), and a private `_closed` (`compare=False`).
+
+- `config_key` property = `(server_path, model_path, ctx_size, mmproj_path,
+  extra_flags)` - the identity of a "same configuration".
+- `is_alive()` = `not _closed and proc is not None and proc.poll() is None`.
+- `close()` is idempotent -> `kill_server(proc)`.
+
+## Warm-cache state & lifecycle
+
+Module-level `_warm_servers: dict[tuple, LLMServer]` guarded by `_warm_lock`
+(lives for the ComfyUI session).
+
+- `get_or_start_server(server_path, model_path, ctx_size, mmproj_path="",
+  extra_flags="", startup_timeout=120)`: if a live server with the same
+  `config_key` exists, reuse it (no VRAM churn). Otherwise `free_gpu_memory()`,
+  `find_free_port()`, `start_server(...)`; on failure return `None`.
+- `close_server(server)`: pop the matching cache entry (only `if server is`
+  the stored one), then `server.close()`. `close_server(None)` is a no-op.
+- `close_all_servers()` + `atexit.register(close_all_servers)` are the safety
+  net so a server is never left running when the process exits.
+
+Invariants: a server is only ever started on a **cold** path (warm reuse never
+calls `free_gpu_memory`); `close_server` must match on identity, not just
+`config_key`, so a stale cache entry from a previous config is never torn down
+by mistake.
+
+## The nodes: inputs, outputs, failure semantics
+
+All use V3 `comfy_api.latest.io` schemas. Every LLM consumer takes
+`LLMServerType.Input("llm_server")` and re-emits `LLMServerType.Output(
+"llm_server")`, so a server threads `Load -> consumer(s) -> Close` and the
+Close is guaranteed to run last.
+
+- **LoadLLMServer** - in: `model_path` (required, absolute, existing),
+  `llama_server_path` (default `llama-server`; bare name on PATH or absolute),
+  `ctx_size` (default 20480), `mmproj_path` (optional), `extra_server_args`
+  (optional), `startup_timeout` (optional, default 120). out: `llm_server`.
+  Raises `ValueError` on a bad path, `RuntimeError` if the server fails to start.
+- **CloseLLMServer** - in: `llm_server`. out: none.
+- **LLMPrompt** - in: `llm_server`, `system_prompt` (optional), `user_prompt`,
+  `seed`, `temperature` (optional), `max_tokens` (optional). out: `response`,
+  `llm_server`. Empty `user_prompt` bypasses (returns `""`). A `None` response
+  **raises** - a direct ask failing is never silent.
+- **PromptEnhancer** - in: `llm_server`, `prompt`, `system_prompt` (default
+  `DEFAULT_ENHANCE_SYSTEM`), `seed`, `temperature`, `max_retries` (default 3),
+  `min_words` (default 25), `generate_negative_prompt` (default True),
+  `ref_images` (Autogrow, 0-9). out: `enhanced_prompt`, `negative_prompt`,
+  `llm_server`. **Degrades** to passing the original prompt through when the
+  model can't produce an acceptable result, so a hiccup never kills the queue.
+- **RulesChecker** - in: `llm_server`, `text`, `rules`, `abort_on_fail` (default
+  True), `seed`, `temperature`. out: `text_out`, `judgement`, `llm_server`.
+  Empty text OR empty rules bypass (passes text through). `ok=False` (no
+  parseable verdict - an infra failure) **raises**. `fail + abort_on_fail`
+  **raises** `RuntimeError("Rules check failed: ...")`; `fail + not abort_on_fail`
+  returns the judgement on the `judgement` output.
+
+The Enhancer/Rules quality-gate and verdict logic lives in `enhance.py` /
+`judge.py`, not in the nodes - the node just maps inputs and maps the result to
+outputs.
+
+## Conventions
+
+- **Dual import pattern** in `client.py` / `enhance.py` / `judge.py` /
+  `nodes.py`: `try: from .x import ... except ImportError: from x import ...`.
+  This lets the logic be unit-tested directly (top-level import) while still
+  working when ComfyUI loads the hyphenated package (relative import). Keep it
+  if you add cross-module imports in those files. `server.py` and `node_base.py`
+  use plain imports (server has no relatives; node_base only needs `comfy_api`).
+- **Failure semantics are per-node and intentional** (see above). Do not make
+  `LLMPrompt`/`RulesChecker` silent on failure, or make `PromptEnhancer` raise.
+- Keep files under ~500 lines and functions under ~50 lines; keep comments
+  sparse (only the "why").
+- No internet access except the local `llama-server` on `127.0.0.1`; the only
+  outbound HTTP is `request.urlopen` to `http://127.0.0.1:<port>`. No telemetry,
+  no tracking, no external model downloads.
+
+## Gotchas / non-obvious constraints
+
+- **Hyphenated package name + relative imports.** The dir is
+  `ComfyUI-LlamaServer-Helpers` (not a valid identifier). ComfyUI loads it via
+  `app/governance.py:pack_module_spec` -> `spec_from_file_location(.../
+  __init__.py)`, which **does** make `from .nodes import ...` work (verified
+  against the working `ComfyUI-PromptEnhancer`, which uses the identical
+  `__init__.py` guard). Do not "simplify" the `__init__.py` to a bare import.
+- **Name collision with ComfyUI root.** `C:\Dev\ComfyUI` also has `server.py`
+  and `nodes.py`. `tests/conftest.py` inserts the **package root** at
+  `sys.path[0]` (before ComfyUI root) so `import server` / `import nodes` in the
+  tests resolve to *this* package. If tests suddenly import ComfyUI's modules,
+  check the conftest path order.
+- **`io.NodeOutput` is tuple-like but not `==` to a tuple.** Indexing (`out[0]`)
+  and `tuple(out)` work, but `out == (a, b)` does not. In tests, compare with
+  `tuple(out) == (...)`.
+- **Windows path semantics.** `os.path.isabs("/x")` is False on Windows; the
+  path validators (and their tests) must use drive-letter / `tempfile`-based
+  absolute paths, not a leading-slash one.
+- **No em/en dashes** in code/comments/docs - use single hyphens.
+- Never kill a process by image name, never write to `nul`, and never modify
+  `C:\Dev\ComfyUI\.venv`.
+
+## Testing
+
+Run from the ComfyUI root (this is a `uv` project - **never** bare
+`python`/`pip`; every `uv run` uses `--no-sync`; pytest is pulled in
+ephemerally and is NOT installed into `.venv`):
+
+```
+uv run --no-sync --with pytest pytest custom_nodes/ComfyUI-LlamaServer-Helpers/tests/ -q
+```
+
+Mocking conventions:
+- Node logic is mocked by `monkeypatch.setattr(nodes, "<fn>", ...)` where `<fn>`
+  is one of `chat_completion_interruptible`, `enhance_prompt`, `check_rules`,
+  `close_server`, `get_or_start_server`.
+- HTTP is mocked by `monkeypatch.setattr(<mod>.request, "urlopen", ...)`
+  returning a tiny context-manager (`.status`, `.read()`).
+- The warm cache is tested by `monkeypatch.setattr(server, "start_server" /
+  "find_free_port" / "free_gpu_memory", fake)` returning a fake `LLMServer`
+  backed by `conftest.FakeProc`. `fake_server` / `make_fake_server` fixtures
+  clear `_warm_servers` around each test.
+
+## Lint / format
+
+```
+uvx ruff check custom_nodes/ComfyUI-LlamaServer-Helpers/     # fix: add --fix
+uvx ruff format custom_nodes/ComfyUI-LlamaServer-Helpers/
+```
+
+Ruff rules are inherited from the ComfyUI root `pyproject.toml` (`N805`, `S307`,
+`S102`, `E`, `T`, `W`, `F`; `E501`/`E722`/`E731`/`E712`/`E402`/`E741` ignored).
+`_print_safe` in `server.py` carries `# noqa: T201` on its two `print` calls on
+purpose - that function is the node's user-facing console output.
