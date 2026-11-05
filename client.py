@@ -233,6 +233,6 @@ def chat_completion_interruptible(
     t.start()
     while t.is_alive():
         t.join(timeout=0.5)
-        check_interrupt()
+        check_interrupt(server)
     t.join()
     return box.get("value")

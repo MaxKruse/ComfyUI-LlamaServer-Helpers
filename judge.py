@@ -137,7 +137,7 @@ def check_rules(
     has_images = bool(images)
     if not has_text and not has_images:
         return CheckResult(True, "", ok=True)
-    check_interrupt()
+    check_interrupt(server)
 
     import random
 
@@ -154,7 +154,7 @@ def check_rules(
         user_message = f"Check this TEXT:\n\n{text.strip()}"
 
     for attempt in range(1, max_retries + 1):
-        check_interrupt()
+        check_interrupt(server)
         attempt_seed = (base_seed + attempt - 1) % 2**32
         _print_safe(
             f"  [{_LOG_TAG}] Rules check attempt {attempt}/{max_retries} (seed {attempt_seed})..."

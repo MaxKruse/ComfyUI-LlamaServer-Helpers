@@ -190,3 +190,16 @@ def test_check_rules_text_only_sends_no_images(monkeypatch, make_fake_server):
     assert r.ok is True
     assert "IMAGES" not in calls[0]["system"]
     assert calls[0]["images"] is None
+
+
+# --- interrupt handling -----------------------------------------------------
+
+
+def test_check_rules_interrupt_kills_server(
+    monkeypatch, make_fake_server, interrupting_comfy
+):
+    exc = interrupting_comfy
+    srv = make_fake_server()
+    with pytest.raises(exc):
+        judge.check_rules(srv, "some text", "RULE")
+    assert not srv.is_alive()

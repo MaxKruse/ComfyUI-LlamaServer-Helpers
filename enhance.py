@@ -183,7 +183,7 @@ def enhance_prompt(
 
     Returns an :class:`EnhanceResult`; on total failure both members are None.
     """
-    check_interrupt()
+    check_interrupt(server)
     base_seed = _resolve_base_seed(seed)
     effective_system = (system_prompt or "").rstrip()
     if effective_system:
@@ -192,7 +192,7 @@ def enhance_prompt(
 
     best: EnhanceResult | None = None
     for attempt in range(1, max_retries + 1):
-        check_interrupt()
+        check_interrupt(server)
         attempt_seed = (base_seed + attempt - 1) % 2**32
         _print_safe(
             f"  [{_LOG_TAG}] Enhance attempt {attempt}/{max_retries} (seed {attempt_seed})..."
