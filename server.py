@@ -127,21 +127,19 @@ def free_gpu_memory():
     a best-effort torch cache clear) when ComfyUI is not importable.
     """
     try:
-        import comfy.model_management
+        import comfy.model_management as model_management
     except ImportError:
-        comfy = None
-    else:
-        comfy = True
+        model_management = None
 
     try:
         import torch
     except ImportError:
         torch = None
 
-    if comfy is True:
+    if model_management is not None:
         _print_safe(f"  [{_LOG_TAG}] Freeing GPU memory for llama-server...")
-        comfy.model_management.unload_all_models()
-        comfy.model_management.soft_empty_cache(force=True)
+        model_management.unload_all_models()
+        model_management.soft_empty_cache(force=True)
         gc.collect()
 
     if torch is not None and torch.cuda.is_available():
@@ -149,7 +147,7 @@ def free_gpu_memory():
         torch.cuda.ipc_collect()
 
     gc.collect()
-    if comfy is True:
+    if model_management is not None:
         _print_safe(f"  [{_LOG_TAG}] GPU memory freed.")
 
 

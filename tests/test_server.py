@@ -2,6 +2,8 @@
 
 import json
 import socket
+import sys
+import types
 from urllib import error
 
 import server
@@ -157,6 +159,63 @@ def test_start_server_returns_none_when_binary_missing(monkeypatch):
     assert (
         server.start_server("/nonexistent/llama-server", "/m.gguf", 1234, 2048) is None
     )
+
+
+# --- free_gpu_memory -------------------------------------------------------
+
+
+def _fake_comfy(monkeypatch, calls):
+    """Install a fake ``comfy`` package whose ``model_management`` records calls."""
+    mm = types.ModuleType("comfy.model_management")
+    mm.unload_all_models = lambda: calls.append("unload_all_models")
+    mm.soft_empty_cache = lambda force=False: calls.append(("soft_empty_cache", force))
+    mm.throw_exception_if_processing_interrupted = lambda: calls.append("interrupt")
+    pkg = types.ModuleType("comfy")
+    pkg.model_management = mm
+    monkeypatch.setitem(sys.modules, "comfy", pkg)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+
+
+def _fake_torch(monkeypatch, cuda_available):
+    torch_mod = types.ModuleType("torch")
+    torch_mod.cuda = types.SimpleNamespace(is_available=lambda: cuda_available)
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+    return torch_mod
+
+
+def test_free_gpu_memory_unloads_comfy_models(monkeypatch):
+    # Regression: the local name bound for ``comfy`` must stay the module,
+    # never a boolean flag - ``comfy.model_management`` crashed with
+    # AttributeError: 'bool' object has no attribute 'model_management'.
+    calls = []
+    printed = []
+    _fake_comfy(monkeypatch, calls)
+    _fake_torch(monkeypatch, cuda_available=False)
+    monkeypatch.setattr(server, "_print_safe", printed.append)
+    server.free_gpu_memory()
+    assert "unload_all_models" in calls
+    assert ("soft_empty_cache", True) in calls
+    assert any("Freeing GPU memory" in m for m in printed)
+    assert any("GPU memory freed" in m for m in printed)
+
+
+def test_free_gpu_memory_noop_without_comfy(monkeypatch):
+    monkeypatch.setitem(sys.modules, "comfy", None)  # force ImportError
+    _fake_torch(monkeypatch, cuda_available=False)
+    printed = []
+    monkeypatch.setattr(server, "_print_safe", printed.append)
+    server.free_gpu_memory()  # must not raise outside ComfyUI
+    assert printed == []
+
+
+def test_free_gpu_memory_still_clears_torch_cache_without_comfy(monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "comfy", None)
+    torch_mod = _fake_torch(monkeypatch, cuda_available=True)
+    torch_mod.cuda.empty_cache = lambda: calls.append("empty_cache")
+    torch_mod.cuda.ipc_collect = lambda: calls.append("ipc_collect")
+    server.free_gpu_memory()
+    assert calls == ["empty_cache", "ipc_collect"]
 
 
 # --- warm cache ------------------------------------------------------------
