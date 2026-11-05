@@ -111,13 +111,24 @@ def build_command(
     return cmd
 
 
-def check_interrupt():
-    """Raise if ComfyUI requested an interrupt. No-op outside ComfyUI (tests)."""
+def check_interrupt(server: LLMServer | None = None):
+    """Raise if ComfyUI requested an interrupt. No-op outside ComfyUI (tests).
+
+    When *server* is given, an interrupt kills that server (and drops it from
+    the warm cache) before the exception propagates: the Close node downstream
+    of the interrupted node never runs, so without this the llama-server would
+    be left running and holding VRAM until the ComfyUI session ends.
+    """
     try:
         import comfy.model_management
     except ImportError:
         return
-    comfy.model_management.throw_exception_if_processing_interrupted()
+    try:
+        comfy.model_management.throw_exception_if_processing_interrupted()
+    except BaseException:
+        if server is not None:
+            close_server(server)
+        raise
 
 
 def free_gpu_memory():
@@ -447,15 +458,17 @@ def get_or_start_server(
     start, never when reusing a warm server.
     """
     global _server_start_generation
-    check_interrupt()
     key = (server_path, model_path, ctx_size, mmproj_path, extra_flags)
     with _warm_lock:
         existing = _warm_servers.get(key)
-        if existing is not None and existing.is_alive():
-            _print_safe(
-                f"  [{_LOG_TAG}] Reusing warm llama-server (port {existing.port}, model {existing.model_name})"
-            )
-            return existing
+    if existing is not None and not existing.is_alive():
+        existing = None
+    check_interrupt(existing)
+    if existing is not None:
+        _print_safe(
+            f"  [{_LOG_TAG}] Reusing warm llama-server (port {existing.port}, model {existing.model_name})"
+        )
+        return existing
 
     free_gpu_memory()
     port = find_free_port()

@@ -1,5 +1,7 @@
 """Tests for enhance.py: quality gate, parsing, and the retry loop."""
 
+import pytest
+
 import enhance
 
 GOOD = (
@@ -213,3 +215,16 @@ def test_enhance_seed_advances_per_attempt(monkeypatch, make_fake_server):
     )
     assert calls[0]["seed"] == 100
     assert calls[1]["seed"] == 101
+
+
+# --- interrupt handling -----------------------------------------------------
+
+
+def test_enhance_prompt_interrupt_kills_server(
+    monkeypatch, make_fake_server, interrupting_comfy
+):
+    exc = interrupting_comfy
+    srv = make_fake_server()
+    with pytest.raises(exc):
+        enhance.enhance_prompt(srv, "a girl", "SYS")
+    assert not srv.is_alive()

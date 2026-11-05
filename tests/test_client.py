@@ -1,7 +1,10 @@
 """Tests for client.py: payload building and chat completion handling."""
 
 import json
+import time
 from urllib import error
+
+import pytest
 
 import client
 
@@ -180,3 +183,24 @@ def test_chat_completion_sends_auth_and_model(monkeypatch):
     assert sent["model"] == "my-model"
     assert calls["req"].get_header("Authorization") == "Bearer no-key"
     assert calls["timeout"] == client._REQUEST_TIMEOUT
+
+
+# --- chat_completion_interruptible -----------------------------------------
+
+
+def test_chat_completion_interruptible_kills_server_on_interrupt(
+    monkeypatch, make_fake_server, interrupting_comfy
+):
+    # A long generation interrupted by the user must kill the server, not just
+    # abandon it (killing it also unblocks the in-flight HTTP request).
+    exc = interrupting_comfy
+    srv = make_fake_server()
+
+    def slow(*a, **k):
+        time.sleep(5)
+        return "done"
+
+    monkeypatch.setattr(client, "chat_completion", slow)
+    with pytest.raises(exc):
+        client.chat_completion_interruptible(srv, "s", "u", 1)
+    assert not srv.is_alive()

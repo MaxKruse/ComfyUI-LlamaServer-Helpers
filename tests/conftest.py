@@ -9,6 +9,7 @@ the node and cache tests.
 
 import os
 import sys
+import types
 
 NODE_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMFYUI_ROOT = os.path.dirname(os.path.dirname(NODE_PACKAGE_ROOT))
@@ -91,6 +92,27 @@ def fake_tree_kill(monkeypatch):
 
     monkeypatch.setattr(server, "_kill_process_tree", _fake)
     yield calls, real
+
+
+class InterruptProcessingException(BaseException):
+    """Stand-in for ComfyUI's interrupt exception (a BaseException, not Exception)."""
+
+
+@pytest.fixture
+def interrupting_comfy(monkeypatch):
+    """Install a fake ``comfy`` package whose interrupt check always raises.
+
+    Returns the exception class so tests can assert on it.
+    """
+    mm = types.ModuleType("comfy.model_management")
+    mm.throw_exception_if_processing_interrupted = lambda: (_ for _ in ()).throw(
+        InterruptProcessingException()
+    )
+    pkg = types.ModuleType("comfy")
+    pkg.model_management = mm
+    monkeypatch.setitem(sys.modules, "comfy", pkg)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", mm)
+    return InterruptProcessingException
 
 
 @pytest.fixture

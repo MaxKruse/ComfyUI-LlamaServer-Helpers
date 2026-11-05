@@ -421,3 +421,53 @@ def test_generation_increments_on_restart_after_close(monkeypatch, make_fake_ser
     assert len(started) == 2
     assert server.server_generation() == after_close + 1
     server.close_all_servers()
+
+
+# --- interrupt handling -----------------------------------------------------
+
+
+def test_check_interrupt_kills_server_before_raising(
+    monkeypatch, make_fake_server, interrupting_comfy
+):
+    # An interrupt while a node is mid-run must kill the in-use server: the
+    # Close node downstream of the interrupted node never runs, so without
+    # this the llama-server would be left holding VRAM until session end.
+    exc = interrupting_comfy
+    srv = make_fake_server()
+    with pytest.raises(exc):
+        server.check_interrupt(srv)
+    assert not srv.is_alive()
+
+
+def test_check_interrupt_without_server_still_raises(interrupting_comfy):
+    exc = interrupting_comfy
+    with pytest.raises(exc):
+        server.check_interrupt()
+
+
+def test_check_interrupt_noop_without_comfy(monkeypatch, make_fake_server):
+    monkeypatch.setitem(sys.modules, "comfy", None)  # force ImportError
+    srv = make_fake_server()
+    server.check_interrupt(srv)  # must not raise outside ComfyUI
+    assert srv.is_alive()
+
+
+def test_get_or_start_server_interrupt_kills_warm_server(
+    monkeypatch, make_fake_server, interrupting_comfy
+):
+    exc = interrupting_comfy
+    srv = make_fake_server()
+    server._warm_servers[srv.config_key] = srv
+    freed = []
+    monkeypatch.setattr(server, "free_gpu_memory", lambda: freed.append(1))
+    with pytest.raises(exc):
+        server.get_or_start_server(
+            srv.server_path,
+            srv.model_path,
+            srv.ctx_size,
+            srv.mmproj_path,
+            srv.extra_flags,
+        )
+    assert not srv.is_alive()
+    assert server._warm_servers == {}
+    assert freed == []  # interrupt before the cold start, no GPU churn
