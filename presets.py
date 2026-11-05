@@ -6,14 +6,28 @@ three-section audiovisual script, ...). Each spec here bakes one model's
 documented dialect into the system prompt of its enhancer node, plus the
 per-model quality-gate and negative-prompt defaults that dialect implies.
 
-This module is pure data - no imports - so it stays testable outside the
-ComfyUI runtime. The node factory in ``model_nodes.py`` builds one node class
-per spec.
+Most dialects are compact inline constants. Six are full dialect guides
+mirrored verbatim from the sibling ComfyUI-PromptEnhancer package - those live
+in the ``presets/`` directory next to this module and are loaded at import
+time, so the guide text stays in reviewable text files instead of one giant
+string.
+
+The module needs only the standard library (``pathlib``) and stays testable
+outside the ComfyUI runtime. The node factory in ``model_nodes.py`` builds one
+node class per spec.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import NamedTuple
+
+PRESETS_DIR = Path(__file__).resolve().parent / "presets"
+
+
+def _load_preset(filename: str) -> str:
+    """Load a mirrored dialect guide from the presets/ directory."""
+    return (PRESETS_DIR / filename).read_text(encoding="utf-8").strip()
 
 
 class EnhancerSpec(NamedTuple):
@@ -142,6 +156,15 @@ WAN22_SYSTEM = (
     "ask for."
 )
 
+# Full dialect guides mirrored verbatim from ../ComfyUI-PromptEnhancer/presets/.
+# Keep the .txt files in sync with that package when its presets change.
+MOSS_IMAGE_SYSTEM = _load_preset("moss-image-sft-t2i.txt")
+QWEN_IMAGE_EDIT_SYSTEM = _load_preset("qwenimage2.1-i2i.txt")
+LTX23_SYSTEM = _load_preset("ltx2.3-10eros-i2v.txt")
+LTX25_SYSTEM = _load_preset("ltx2.5-i2v.txt")
+MINIMAX_H3_R2V_SYSTEM = _load_preset("minimax-h3-r2v.txt")
+MINIMAX_H3_EROS_MAX_SYSTEM = _load_preset("minimax-h3-eros-max-r2v.txt")
+
 ENHANCER_SPECS: list[EnhancerSpec] = [
     EnhancerSpec(
         node_id="FluxPromptEnhancer",
@@ -212,5 +235,52 @@ ENHANCER_SPECS: list[EnhancerSpec] = [
         system_prompt=WAN22_SYSTEM,
         category="LlamaServer/Video",
         default_min_words=40,
+    ),
+    EnhancerSpec(
+        node_id="MossImagePromptEnhancer",
+        display_name="MOSS-Image SFT Prompt Enhancer (LLM Server)",
+        description="Enhance a prompt for MOSS-Image SFT: observer-style prose caption that commits the whole frame; Layout JSON only with placement structure.",
+        system_prompt=MOSS_IMAGE_SYSTEM,
+        category="LlamaServer/LLM",
+        default_min_words=40,
+    ),
+    EnhancerSpec(
+        node_id="QwenImageEditPromptEnhancer",
+        display_name="Qwen-Image 2.1 Edit Prompt Enhancer (LLM Server)",
+        description="Enhance an image-edit instruction for Qwen-Image 2.1 (i2i): precise, unambiguous editing directive anchored on the input image.",
+        system_prompt=QWEN_IMAGE_EDIT_SYSTEM,
+        category="LlamaServer/LLM",
+    ),
+    EnhancerSpec(
+        node_id="Ltx23PromptEnhancer",
+        display_name="LTX 2.3 10Eros Prompt Enhancer (LLM Server)",
+        description="Enhance a prompt for LTX 2.3 10Eros (i2v): one dense cinematic paragraph, 60-200 words, with audio and camera interwoven.",
+        system_prompt=LTX23_SYSTEM,
+        category="LlamaServer/Video",
+        default_min_words=60,
+    ),
+    EnhancerSpec(
+        node_id="Ltx25PromptEnhancer",
+        display_name="LTX 2.5 Prompt Enhancer (LLM Server)",
+        description="Enhance a prompt for LTX 2.5 (i2v): one continuous take, prompt the delta not the image, native audio always written.",
+        system_prompt=LTX25_SYSTEM,
+        category="LlamaServer/Video",
+        default_min_words=40,
+    ),
+    EnhancerSpec(
+        node_id="MiniMaxH3R2VPromptEnhancer",
+        display_name="MiniMax H3 R2V Prompt Enhancer (LLM Server)",
+        description="Enhance a prompt for MiniMax H3 reference-to-video: six-section full-reference rewrite with <Subject>/<Picture>/<Video>/<Audio> labels.",
+        system_prompt=MINIMAX_H3_R2V_SYSTEM,
+        category="LlamaServer/Video",
+        default_min_words=50,
+    ),
+    EnhancerSpec(
+        node_id="MiniMaxH3ErosMaxPromptEnhancer",
+        display_name="MiniMax H3 Eros Max Prompt Enhancer (LLM Server)",
+        description="Enhance a prompt for MiniMax H3 Eros Max (beta5) ref2va/t2va: full-reference rewrite in literal-temporal style, NSFW focus.",
+        system_prompt=MINIMAX_H3_EROS_MAX_SYSTEM,
+        category="LlamaServer/Video",
+        default_min_words=50,
     ),
 ]

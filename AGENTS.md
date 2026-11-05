@@ -19,7 +19,11 @@ a set of nodes that all share **one** connection to that model:
 - One enhancer per target model, built by a factory from data-driven specs:
   `FluxPromptEnhancer`, `SDXLPromptEnhancer`, `SD15PromptEnhancer`,
   `Krea2PromptEnhancer`, `ChromaPromptEnhancer`, `ZImagePromptEnhancer`,
-  `QwenImagePromptEnhancer`, `MiniMaxH3PromptEnhancer`, `Wan22PromptEnhancer`
+  `QwenImagePromptEnhancer`, `QwenImageEditPromptEnhancer`
+  (Qwen-Image 2.1 i2i), `MossImagePromptEnhancer`, `MiniMaxH3PromptEnhancer`,
+  `MiniMaxH3R2VPromptEnhancer`, `MiniMaxH3ErosMaxPromptEnhancer`,
+  `Wan22PromptEnhancer`, `Ltx23PromptEnhancer` (LTX 2.3 10Eros),
+  `Ltx25PromptEnhancer`
   (same shape as `PromptEnhancer`, but with the model's documented prompt
   dialect baked into the system-prompt default).
 
@@ -38,7 +42,9 @@ Two layers, split deliberately:
   them unit-testable without the ComfyUI runtime on the path.
 - **Pure-data module** (`presets.py`): the `EnhancerSpec` NamedTuple plus
   `ENHANCER_SPECS`, the per-model dialect system prompts and quality-gate
-  defaults for the per-model enhancers. No imports at all - keep it that way.
+  defaults for the per-model enhancers. Imports only `pathlib`: the six
+  mirrored dialect guides are loaded from the `presets/` directory at import
+  time. Keep it stdlib-only.
 - **Comfy-dependent modules** (`node_base.py`, `nodes.py`, `model_nodes.py`)
   import `comfy_api.latest.io` at module scope and are only importable inside
   the ComfyUI runtime (or with it on the path in tests).
@@ -52,7 +58,8 @@ a new third-party dependency (the node is stdlib-only by design).
 |---|---|
 | `__init__.py` | Merges the mappings from `.nodes` and `.model_nodes` into `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` inside a `try/except` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
 | `nodes.py` | The five base `io.ComfyNode` classes (Load/Close/LLMPrompt/PromptEnhancer/RulesChecker), the base mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
-| `presets.py` | Pure data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, min-words and negative-prompt defaults). |
+| `presets.py` | Data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, min-words and negative-prompt defaults). Compact dialects are inline constants; six full dialect guides are loaded from `presets/` at import time (`_load_preset`). |
+| `presets/` | Six `.txt` dialect guides mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v). Keep them in sync with that package when its presets change. |
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
 | `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `kill_server`); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `atexit`). |
@@ -117,16 +124,26 @@ Close is guaranteed to run last.
   model can't produce an acceptable result, so a hiccup never kills the queue.
 - **Per-model prompt enhancers** (`FluxPromptEnhancer`, `SDXLPromptEnhancer`,
   `SD15PromptEnhancer`, `Krea2PromptEnhancer`, `ChromaPromptEnhancer`,
-  `ZImagePromptEnhancer`, `QwenImagePromptEnhancer` under `LlamaServer/LLM`;
-  `MiniMaxH3PromptEnhancer`, `Wan22PromptEnhancer` under `LlamaServer/Video`) -
+  `ZImagePromptEnhancer`, `QwenImagePromptEnhancer`,
+  `QwenImageEditPromptEnhancer` (Qwen-Image 2.1 i2i),
+  `MossImagePromptEnhancer` under `LlamaServer/LLM`;
+  `MiniMaxH3PromptEnhancer`, `MiniMaxH3R2VPromptEnhancer`,
+  `MiniMaxH3ErosMaxPromptEnhancer`, `Wan22PromptEnhancer`,
+  `Ltx23PromptEnhancer` (LTX 2.3 10Eros), `Ltx25PromptEnhancer` under
+  `LlamaServer/Video`) -
   built by `_build_enhancer_node(spec)` in `model_nodes.py` from
   `presets.ENHANCER_SPECS` (one spec per model: node_id, display_name,
   description, dialect system prompt, category, `default_min_words`,
   `default_generate_negative`). Same inputs/outputs as `PromptEnhancer`, but
   `system_prompt` defaults to the model's dialect (still user-editable), and
   `min_words` / `generate_negative_prompt` default from the spec (SD1.5: 10
-  words; Z-Image: 40; MiniMax H3: 50; negative prompt on by default for SDXL,
-  SD1.5, Chroma only). Same **degrade** semantics as `PromptEnhancer`.
+  words; Z-Image: 40; MOSS-Image: 40; LTX 2.3: 60; LTX 2.5: 40; MiniMax H3 /
+  R2V / Eros Max: 50; negative prompt on by default for SDXL, SD1.5, Chroma
+  only). The six mirrored models' dialects (Qwen-Image 2.1 Edit, MOSS-Image,
+  both LTX, both MiniMax R2V variants) are the full dialect guides mirrored
+  verbatim from `../ComfyUI-PromptEnhancer`, loaded from `presets/*.txt` at
+  import time - keep the files in sync with that package. Same **degrade**
+  semantics as `PromptEnhancer`.
   `MODEL_ENHANCER_NODES` maps node_id -> built class. The classes are built via
   `type()` (dynamic class creation); they are ordinary `io.ComfyNode`
   subclasses, nothing else is dynamic.
@@ -157,7 +174,8 @@ outputs.
   import) while still working when ComfyUI loads the hyphenated package
   (relative import). Keep it if you add cross-module imports in those files.
   `server.py` and `node_base.py` use plain imports (server has no relatives;
-  node_base only needs `comfy_api`); `presets.py` has no imports at all.
+  node_base only needs `comfy_api`); `presets.py` imports only `pathlib`
+  (to load the mirrored `.txt` dialect guides from `presets/`).
 - **Failure semantics are per-node and intentional** (see above). Do not make
   `LLMPrompt`/`RulesChecker`/`ImageRulesChecker` silent on failure, or make
   `PromptEnhancer` (or any per-model enhancer) raise.
