@@ -17,8 +17,7 @@ a set of nodes that all share **one** connection to that model:
 - `ImageRulesChecker` - judge generated image(s) against free-form rules
   (vision model + mmproj required).
 - One enhancer per target model, built by a factory from data-driven specs:
-  `FluxPromptEnhancer`, `SDXLPromptEnhancer`, `SD15PromptEnhancer`,
-  `Krea2PromptEnhancer`, `ChromaPromptEnhancer`, `ZImagePromptEnhancer`,
+  `FluxPromptEnhancer`, `Krea2PromptEnhancer`, `ZImagePromptEnhancer`,
   `QwenImagePromptEnhancer`, `QwenImageEditPromptEnhancer`
   (Qwen-Image 2.1 i2i), `MossImagePromptEnhancer`, `MiniMaxH3PromptEnhancer`,
   `MiniMaxH3R2VPromptEnhancer`, `MiniMaxH3ErosMaxPromptEnhancer`,
@@ -122,8 +121,7 @@ Close is guaranteed to run last.
   `ref_images` (Autogrow, 0-9). out: `enhanced_prompt`, `negative_prompt`,
   `llm_server`. **Degrades** to passing the original prompt through when the
   model can't produce an acceptable result, so a hiccup never kills the queue.
-- **Per-model prompt enhancers** (`FluxPromptEnhancer`, `SDXLPromptEnhancer`,
-  `SD15PromptEnhancer`, `Krea2PromptEnhancer`, `ChromaPromptEnhancer`,
+- **Per-model prompt enhancers** (`FluxPromptEnhancer`, `Krea2PromptEnhancer`,
   `ZImagePromptEnhancer`, `QwenImagePromptEnhancer`,
   `QwenImageEditPromptEnhancer` (Qwen-Image 2.1 i2i),
   `MossImagePromptEnhancer` under `LlamaServer/LLM`;
@@ -136,10 +134,10 @@ Close is guaranteed to run last.
   description, dialect system prompt, category, `default_min_words`,
   `default_generate_negative`). Same inputs/outputs as `PromptEnhancer`, but
   `system_prompt` defaults to the model's dialect (still user-editable), and
-  `min_words` / `generate_negative_prompt` default from the spec (SD1.5: 10
-  words; Z-Image: 40; MOSS-Image: 40; LTX 2.3: 60; LTX 2.5: 40; MiniMax H3 /
-  R2V / Eros Max: 50; negative prompt on by default for SDXL, SD1.5, Chroma
-  only). The six mirrored models' dialects (Qwen-Image 2.1 Edit, MOSS-Image,
+  `min_words` / `generate_negative_prompt` default from the spec (Z-Image: 40;
+  MOSS-Image: 40; LTX 2.3: 60; LTX 2.5: 40; MiniMax H3 / R2V / Eros Max: 50;
+  no per-model enhancer defaults `generate_negative_prompt` on - only the
+  generic `PromptEnhancer` does). The six mirrored models' dialects (Qwen-Image 2.1 Edit, MOSS-Image,
   both LTX, both MiniMax R2V variants) are the full dialect guides mirrored
   verbatim from `../ComfyUI-PromptEnhancer`, loaded from `presets/*.txt` at
   import time - keep the files in sync with that package. Same **degrade**

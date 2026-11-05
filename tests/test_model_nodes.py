@@ -51,9 +51,9 @@ def test_specs_unique_ids_and_complete_fields():
         assert 1 <= s.default_min_words <= 500
 
 
-def test_negative_prompt_supported_models():
+def test_no_spec_defaults_generate_negative():
     neg = {s.node_id for s in ENHANCER_SPECS if s.default_generate_negative}
-    assert neg == {"SDXLPromptEnhancer", "SD15PromptEnhancer", "ChromaPromptEnhancer"}
+    assert neg == set()
 
 
 def test_video_specs_use_video_category():
@@ -164,11 +164,11 @@ def test_model_node_min_words_and_negative_defaults(monkeypatch, make_fake_serve
     srv = make_fake_server()
     captured = {}
     monkeypatch.setattr(model_nodes, "enhance_prompt", _record_fake_enhance(captured))
-    model_nodes.MODEL_ENHANCER_NODES["SD15PromptEnhancer"].execute(
+    model_nodes.MODEL_ENHANCER_NODES["Ltx23PromptEnhancer"].execute(
         llm_server=srv, prompt="a cat"
     )
-    assert captured["min_words"] == 10
-    assert captured["generate_negative"] is True
+    assert captured["min_words"] == 60
+    assert captured["generate_negative"] is False
 
     model_nodes.MODEL_ENHANCER_NODES["FluxPromptEnhancer"].execute(
         llm_server=srv, prompt="a cat"
