@@ -104,15 +104,24 @@ mistake.
 
 All use V3 `comfy_api.latest.io` schemas. Every LLM consumer takes
 `LLMServerType.Input("llm_server")` and re-emits `LLMServerType.Output(
-"llm_server")`, so a server threads `Load -> consumer(s) -> Close` and the
-Close is guaranteed to run last.
+"llm_server")`, so a server threads `Load -> consumer(s) -> Close`. Threading
+the connection is what orders Close *after* the consumers; Close (and the image
+gate) are additionally declared output nodes so the executor actually schedules
+them - ComfyUI only runs output nodes and their upstream dependencies, and a
+connection-only sink with no outputs would otherwise never run.
 
 - **LoadLLMServer** - in: `model_path` (required, absolute, existing),
   `llama_server_path` (default `llama-server`; bare name on PATH or absolute),
   `ctx_size` (default 20480), `mmproj_path` (optional), `extra_server_args`
   (optional), `startup_timeout` (optional, default 120). out: `llm_server`.
   Raises `ValueError` on a bad path, `RuntimeError` if the server fails to start.
-- **CloseLLMServer** - in: `llm_server`. out: none.
+- **CloseLLMServer** - in: `llm_server`. out: none. An output node
+  (`is_output_node=True`) with a NaN cache fingerprint (`fingerprint_inputs`
+  returns `float("NaN")`): the executor only schedules output nodes (or their
+  upstream dependencies), so without the flag a no-output sink is never reached
+  (and right-click -> Run fails with "Prompt has no outputs"); the NaN
+  fingerprint forces a re-run every time because closing is a side effect, never
+  a cached no-op.
 - **LLMPrompt** - in: `llm_server`, `system_prompt` (optional), `user_prompt`,
   `seed`, `temperature` (optional), `max_tokens` (optional). out: `response`,
   `llm_server`. Empty `user_prompt` bypasses (returns `""`). A `None` response
@@ -156,7 +165,10 @@ Close is guaranteed to run last.
 - **ImageRulesChecker** - in: `llm_server`, `rules` (optional), `images`
   (Autogrow, 0-9, VAE-decoded tensors), `abort_on_fail` (default True), `seed`,
   `temperature`. out: `judgement`, `llm_server` (no image passthrough - it is a
-  pure gate; fan the image to the save/next node separately). No images OR
+  pure gate; fan the image to the save/next node separately). An output node
+  (`is_output_node=True`) with a NaN cache fingerprint, so an unconnected gate
+  is still scheduled and always re-runs (a cached no-op gate would silently
+  pass). No images OR
   empty rules bypass (returns `("", server)`). `ok=False` **raises** `RuntimeError`
   (mentions the vision/mmproj requirement). `fail + abort_on_fail` **raises**
   `RuntimeError("Image rules check failed: ...")`; `fail + not abort_on_fail`
@@ -187,6 +199,16 @@ outputs.
 
 ## Gotchas / non-obvious constraints
 
+- **Close and the image gate MUST stay output nodes with a NaN fingerprint.**
+  ComfyUI's executor (`execution.py`) seeds the run from nodes where
+  `OUTPUT_NODE is True`, then walks *backward* through inputs only; a node whose
+  outputs are all unconsumed and that is not an output node is pruned and never
+  scheduled (right-click -> Run reports "Prompt has no outputs"). `CloseLLMServer`
+  and `ImageRulesChecker` have no useful outputs, so both are
+  `is_output_node=True`. Keep their `fingerprint_inputs` returning
+  `float("NaN")`: closing / gating are side effects and must re-run every time -
+  the default `RAM_PRESSURE` output cache is persistent across queue items, so a
+  cached no-op would silently skip the side effect. Do not "simplify" them away.
 - **Hyphenated package name + relative imports.** The dir is
   `ComfyUI-LlamaServer-Helpers` (not a valid identifier). ComfyUI loads it via
   `app/governance.py:pack_module_spec` -> `spec_from_file_location(.../

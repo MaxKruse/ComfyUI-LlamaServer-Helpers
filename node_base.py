@@ -18,8 +18,12 @@ from comfy_api.latest import io
 
 # The socket type that carries the LLMServer connection between nodes. Every
 # consumer node takes this as an input and re-emits it as an output, so a server
-# can be threaded through a chain (Load -> Enhance -> Rules -> Close) and the
-# Close node is guaranteed to run after the consumers.
+# can be threaded through a chain (Load -> Enhance -> Rules -> Close). Threading
+# the connection is what makes Close run *after* the consumers; Close and the
+# image gate are additionally declared output nodes (is_output_node=True) so the
+# executor actually schedules them - ComfyUI only runs output nodes and their
+# upstream dependencies, and a connection-only sink with no outputs would
+# otherwise never be reached.
 LLMServerType = io.Custom("LLMSERVER")
 
 

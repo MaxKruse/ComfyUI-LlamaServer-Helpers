@@ -9,8 +9,10 @@ Five nodes built around a single shared model connection:
 - :class:`RulesChecker`    - judge free-form text against free-form rules.
 
 Every LLM consumer takes the ``LLMSERVER`` connection as an input and re-emits
-it as an output, so a server is threaded through a workflow and Close is
-guaranteed to run last.
+it as an output, so a server is threaded through a workflow (Load -> consumer(s)
+-> Close). Threading the connection is what orders Close after the consumers;
+Close is additionally declared an output node so the executor actually schedules
+it (ComfyUI only runs output nodes and their upstream dependencies).
 """
 
 from __future__ import annotations
@@ -155,6 +157,10 @@ class CloseLLMServer(io.ComfyNode):
             node_id="CloseLLMServer",
             display_name="Close LLM Server",
             category="LlamaServer",
+            # An output node so ComfyUI actually schedules it: the executor only
+            # runs nodes that are output nodes or upstream of one, and Close has
+            # no outputs of its own, so without this it would never run.
+            is_output_node=True,
             description="Stop the llama-server process and release its VRAM. Put this after the last LLM node that uses the connection.",
             inputs=[
                 LLMServerType.Input(
@@ -170,6 +176,13 @@ class CloseLLMServer(io.ComfyNode):
     def execute(cls, **inputs):
         close_server(inputs["llm_server"])
         return io.NodeOutput()
+
+    @classmethod
+    def fingerprint_inputs(cls, **inputs):
+        # Always re-run, never serve a cached no-op: closing the server is a
+        # side effect that must happen on every execution (NaN never equals
+        # itself, so the output cache always misses).
+        return float("NaN")
 
 
 class LLMPrompt(io.ComfyNode):

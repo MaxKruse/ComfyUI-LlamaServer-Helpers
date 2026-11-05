@@ -300,3 +300,16 @@ def test_image_qa_forwards_images(monkeypatch, make_fake_server):
     assert captured["images"] == [img]
     assert captured["text"] == ""
     assert captured["rules"] == "no watermark"
+
+
+def test_image_checker_is_output_node():
+    # The gate must be scheduled even when its outputs are left unconnected:
+    # the executor only runs output nodes (or their upstream dependencies).
+    assert model_nodes.ImageRulesChecker.OUTPUT_NODE is True
+
+
+def test_image_checker_fingerprint_is_nan():
+    # Gating is a side effect: it must re-run every time, never be served from
+    # the persistent output cache (a cached no-op gate would silently pass).
+    fp = model_nodes.ImageRulesChecker.fingerprint_inputs()
+    assert fp != fp  # NaN
