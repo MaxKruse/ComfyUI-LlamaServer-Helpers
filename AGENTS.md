@@ -37,8 +37,11 @@ Two layers, split deliberately:
 - **Pure-logic modules** (`server.py`, `client.py`, `enhance.py`, `judge.py`)
   import **no** `comfy_api`. They only need the Python standard library, plus
   lazy, `try/except ImportError` imports of `comfy.model_management` inside
-  `check_interrupt()` / `free_gpu_memory()` (no-op outside ComfyUI). This keeps
-  them unit-testable without the ComfyUI runtime on the path.
+  `check_interrupt(server=None)` / `free_gpu_memory()` (no-op outside
+  ComfyUI). On an interrupt, `check_interrupt` kills the passed *server*
+  (via `close_server`) **before** re-raising - see the interrupt invariant
+  below. This keeps them unit-testable without the ComfyUI runtime on the
+  path.
 - **Pure-data module** (`presets.py`): the `EnhancerSpec` NamedTuple plus
   `ENHANCER_SPECS`, the per-model dialect system prompts and quality-gate
   defaults for the per-model enhancers. Imports only `pathlib`: the six
@@ -100,7 +103,14 @@ Invariants: a server is only ever started on a **cold** path (warm reuse never
 calls `free_gpu_memory`); `close_server` must match on process identity (same
 object, or a different wrapper with the same `proc.pid`), never just
 `config_key`, so a *newer* server for the same config is never torn down by
-mistake.
+mistake; and an interrupt during a node's run kills **only the in-use server
+of the interrupted node** (`check_interrupt(server)` at every call site in
+`client` / `enhance` / `judge`, plus the warm server for its own config in
+`get_or_start_server`) before the interrupt exception aborts the run - the
+Close node downstream of the interrupted node never runs, so this is the only
+teardown that happens. A half-started server from an interrupted cold start is
+handled separately: `start_server` kills the process on any exception,
+interrupt included.
 
 ## The nodes: inputs, outputs, failure semantics
 
@@ -185,6 +195,14 @@ never hands out a stale (closed) connection.
   `"Image rules check failed: <reason>"`; `pass` reports `""`. Wire `judgement`
   into `CloseLLMServer` to abort after the server closes. Calls
   `check_rules(server, "", rules, ..., images=...)`.
+
+- **Interruption kills the in-use server.** Every LLM node passes its current
+  `LLMServer` to `check_interrupt(server)` at each interrupt check (while a
+  generation runs, between retry attempts, and before a cold start in
+  `get_or_start_server`). On a user interrupt the server is killed and its
+  VRAM freed **before** the interrupt exception aborts the run - the Close node
+  downstream of the interrupted node never runs, so this is the only teardown
+  that happens. Warm servers of *other* configurations are untouched.
 
 The Enhancer/Rules quality-gate and verdict logic lives in `enhance.py` /
 `judge.py`, not in the nodes - the node just maps inputs and maps the result to

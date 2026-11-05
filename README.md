@@ -36,6 +36,8 @@ The nodes share **one** server connection per model: start it once with **Load L
 
 Every LLM node takes the `llm_server` connection in and passes it straight back out, so a server threads through the workflow: `Load → LLM node(s) → Close`. The Close node is therefore guaranteed to run after the nodes that used the server. To make a failed check abort the run, wire the checker's `judgement` output into Close's `judgement` input: Close frees the server first, then aborts if the verdict is a failure.
 
+If you **interrupt** a run while any of the LLM nodes is using the model, the server is stopped and its VRAM freed right away (the Close node cannot run once the run is aborted, so the node itself handles it). The next run then cold-starts the model again.
+
 ## How to run
 
 1. Put this folder in `ComfyUI/custom_nodes/`.
