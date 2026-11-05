@@ -61,7 +61,7 @@ a new third-party dependency (the node is stdlib-only by design).
 | `presets/` | Six `.txt` dialect guides mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v). Keep them in sync with that package when its presets change. |
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
-| `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `atexit`). |
+| `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `server_generation`, `atexit`). |
 | `client.py` | HTTP chat client: `chat_completion`, `chat_completion_interruptible`, `build_user_content`, `_payload`, image-to-base64-JPEG, context-error detection, timing log. |
 | `enhance.py` | `enhance_prompt` + the quality gate (`is_good_prompt`: min words, refusal patterns, Jaccard echo) + lenient JSON parsing. |
 | `judge.py` | `check_rules` (text and/or images via the `images=` kwarg; vision path uses `_judge_image_system_prompt`) + `CheckResult` + verdict parsing. |
@@ -87,7 +87,9 @@ Module-level `_warm_servers: dict[tuple, LLMServer]` guarded by `_warm_lock`
 - `get_or_start_server(server_path, model_path, ctx_size, mmproj_path="",
   extra_flags="", startup_timeout=120)`: if a live server with the same
   `config_key` exists, reuse it (no VRAM churn). Otherwise `free_gpu_memory()`,
-  `find_free_port()`, `start_server(...)`; on failure return `None`.
+  `find_free_port()`, `start_server(...)`; on failure return `None`. On a
+  successful cold start `_server_start_generation` is bumped (the `LoadLLMServer`
+  cache fingerprint - see Gotchas).
 - `close_server(server)`: pop the matching cache entry when the stored server
   is this object **or a different wrapper around the same process** (`_same_process`:
   same `proc.pid`), then `server.close()`. `close_server(None)` is a no-op.
@@ -104,15 +106,26 @@ mistake.
 
 All use V3 `comfy_api.latest.io` schemas. Every LLM consumer takes
 `LLMServerType.Input("llm_server")` and re-emits `LLMServerType.Output(
-"llm_server")`, so a server threads `Load -> consumer(s) -> Close` and the
-Close is guaranteed to run last.
+"llm_server")`, so a server threads `Load -> consumer(s) -> Close`. Threading
+the connection is what orders Close *after* the consumers; Close (and the image
+gate) are additionally declared output nodes so the executor actually schedules
+them - ComfyUI only runs output nodes and their upstream dependencies, and a
+connection-only sink with no outputs would otherwise never run. `LoadLLMServer`
+returns the start-generation as its `fingerprint_inputs` so its output cache
+never hands out a stale (closed) connection.
 
 - **LoadLLMServer** - in: `model_path` (required, absolute, existing),
   `llama_server_path` (default `llama-server`; bare name on PATH or absolute),
   `ctx_size` (default 20480), `mmproj_path` (optional), `extra_server_args`
   (optional), `startup_timeout` (optional, default 120). out: `llm_server`.
   Raises `ValueError` on a bad path, `RuntimeError` if the server fails to start.
-- **CloseLLMServer** - in: `llm_server`. out: none.
+- **CloseLLMServer** - in: `llm_server`. out: none. An output node
+  (`is_output_node=True`) with a NaN cache fingerprint (`fingerprint_inputs`
+  returns `float("NaN")`): the executor only schedules output nodes (or their
+  upstream dependencies), so without the flag a no-output sink is never reached
+  (and right-click -> Run fails with "Prompt has no outputs"); the NaN
+  fingerprint forces a re-run every time because closing is a side effect, never
+  a cached no-op.
 - **LLMPrompt** - in: `llm_server`, `system_prompt` (optional), `user_prompt`,
   `seed`, `temperature` (optional), `max_tokens` (optional). out: `response`,
   `llm_server`. Empty `user_prompt` bypasses (returns `""`). A `None` response
@@ -156,7 +169,10 @@ Close is guaranteed to run last.
 - **ImageRulesChecker** - in: `llm_server`, `rules` (optional), `images`
   (Autogrow, 0-9, VAE-decoded tensors), `abort_on_fail` (default True), `seed`,
   `temperature`. out: `judgement`, `llm_server` (no image passthrough - it is a
-  pure gate; fan the image to the save/next node separately). No images OR
+  pure gate; fan the image to the save/next node separately). An output node
+  (`is_output_node=True`) with a NaN cache fingerprint, so an unconnected gate
+  is still scheduled and always re-runs (a cached no-op gate would silently
+  pass). No images OR
   empty rules bypass (returns `("", server)`). `ok=False` **raises** `RuntimeError`
   (mentions the vision/mmproj requirement). `fail + abort_on_fail` **raises**
   `RuntimeError("Image rules check failed: ...")`; `fail + not abort_on_fail`
@@ -187,6 +203,26 @@ outputs.
 
 ## Gotchas / non-obvious constraints
 
+- **Close and the image gate MUST stay output nodes with a NaN fingerprint.**
+  ComfyUI's executor (`execution.py`) seeds the run from nodes where
+  `OUTPUT_NODE is True`, then walks *backward* through inputs only; a node whose
+  outputs are all unconsumed and that is not an output node is pruned and never
+  scheduled (right-click -> Run reports "Prompt has no outputs"). `CloseLLMServer`
+  and `ImageRulesChecker` have no useful outputs, so both are
+  `is_output_node=True`. Keep their `fingerprint_inputs` returning
+  `float("NaN")`: closing / gating are side effects and must re-run every time -
+  the default `RAM_PRESSURE` output cache is persistent across queue items, so a
+  cached no-op would silently skip the side effect. Do not "simplify" them away.
+- **`LoadLLMServer.fingerprint_inputs` returns the start-generation, not NaN.**
+  `server.get_or_start_server` bumps `_server_start_generation` on every cold
+  start and `LoadLLMServer.fingerprint_inputs` returns it, so Load's output-cache
+  key changes exactly when a server (re)starts -> a cache miss -> a fresh live
+  `LLMServer` is emitted (a cached closed one would otherwise be handed out on
+  run 2). Do NOT make it return `float("NaN")`: a NaN in a node's signature
+  propagates into every transitive descendant's signature (including the
+  expensive sampler), making the whole downstream tree permanently non-cacheable.
+  The generation is global (not per-config) on purpose; a bump may re-run a
+  sibling Load node, but that is a cheap warm-cache lookup.
 - **Hyphenated package name + relative imports.** The dir is
   `ComfyUI-LlamaServer-Helpers` (not a valid identifier). ComfyUI loads it via
   `app/governance.py:pack_module_spec` -> `spec_from_file_location(.../

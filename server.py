@@ -415,6 +415,21 @@ def start_server(
 _warm_servers: dict[tuple, LLMServer] = {}
 _warm_lock = Lock()
 
+# "Start generation": bumps every time a llama-server is cold-started. The Load
+# node returns this as its cache fingerprint (``fingerprint_inputs``) so
+# ComfyUI's output cache never hands out a stale (closed) LLMServer: the
+# fingerprint changes exactly when a server is (re)started, forcing a cache
+# miss and a fresh, live server. It is global (not per-config) on purpose: a
+# bump may make a sibling Load node re-run, but re-running is a cheap warm-cache
+# lookup, and the invariant that matters is that a Load node never returns a
+# dead server.
+_server_start_generation = 0
+
+
+def server_generation() -> int:
+    """Current start generation, used as the Load node's cache fingerprint."""
+    return _server_start_generation
+
 
 def get_or_start_server(
     server_path: str,
@@ -431,6 +446,7 @@ def get_or_start_server(
     or None when a cold start fails. Frees ComfyUI GPU memory only on a cold
     start, never when reusing a warm server.
     """
+    global _server_start_generation
     check_interrupt()
     key = (server_path, model_path, ctx_size, mmproj_path, extra_flags)
     with _warm_lock:
@@ -456,6 +472,7 @@ def get_or_start_server(
         return None
     with _warm_lock:
         _warm_servers[key] = server
+        _server_start_generation += 1
     return server
 
 

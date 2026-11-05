@@ -6,6 +6,7 @@ the nodes' own logic: bypass handling, output shapes, abort behaviour, and error
 paths.
 """
 
+import math
 import os
 import tempfile
 
@@ -13,6 +14,7 @@ import pytest
 
 import node_base
 import nodes
+import server
 from enhance import EnhanceResult
 from judge import CheckResult
 
@@ -282,3 +284,31 @@ def test_load_failed_start_raises(monkeypatch, make_fake_server, tmp_path):
     monkeypatch.setattr(nodes, "get_or_start_server", lambda *a, **k: None)
     with pytest.raises(RuntimeError, match="Failed to start"):
         nodes.LoadLLMServer.execute(model_path=str(model), ctx_size=2048)
+
+
+# --- scheduling & caching (output-node flags + fingerprints) ---------------
+
+
+def test_close_is_output_node():
+    # Close must be scheduled: the executor only runs output nodes (or their
+    # upstream dependencies), and Close has no outputs of its own.
+    assert nodes.CloseLLMServer.OUTPUT_NODE is True
+
+
+def test_load_is_not_output_node():
+    # Sanity: Load is a plain producer, not an output node.
+    assert nodes.LoadLLMServer.OUTPUT_NODE is False
+
+
+def test_close_fingerprint_is_nan():
+    # Closing is a side effect: it must re-run every time, never be served from
+    # the persistent output cache (NaN != NaN, so the cache always misses).
+    assert math.isnan(nodes.CloseLLMServer.fingerprint_inputs())
+
+
+def test_load_fingerprint_tracks_generation(monkeypatch):
+    # Load's cache key is the server start-generation, so it changes exactly
+    # when a server (re)starts and the output cache never serves a stale
+    # (closed) connection.
+    monkeypatch.setattr(server, "_server_start_generation", 7)
+    assert nodes.LoadLLMServer.fingerprint_inputs() == 7

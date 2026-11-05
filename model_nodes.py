@@ -197,6 +197,12 @@ class ImageRulesChecker(io.ComfyNode):
             node_id="ImageRulesChecker",
             display_name="Image Rules Checker (LLM Server)",
             category="LlamaServer/LLM",
+            # An output node so the gate is actually scheduled: it is a pure
+            # gate whose outputs (judgement, passthrough connection) are often
+            # left unconnected, and the executor only runs output nodes (or
+            # their upstream dependencies) - without this an unconnected gate
+            # would silently never run.
+            is_output_node=True,
             description="Check generated image(s) against free-form rules with a multimodal LLM. Abort the workflow on failure, or report the judgement.",
             inputs=[
                 LLMServerType.Input(
@@ -285,6 +291,13 @@ class ImageRulesChecker(io.ComfyNode):
         if bool(inputs.get("abort_on_fail", True)):
             raise RuntimeError(f"Image rules check failed: {verdict.reason}")
         return io.NodeOutput(verdict.reason, server)
+
+    @classmethod
+    def fingerprint_inputs(cls, **inputs):
+        # Always re-run, never serve a cached no-op: the gate must evaluate on
+        # every execution (NaN never equals itself, so the output cache always
+        # misses).
+        return float("NaN")
 
 
 NODE_CLASS_MAPPINGS = {
