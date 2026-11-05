@@ -1,8 +1,8 @@
 """Per-model prompt-dialect system prompts for the model-specific enhancer nodes.
 
 Each generation model speaks its own prompt dialect (FLUX wants flowing prose,
-SD1.5 wants booru tags, Z-Image ignores negative prompts, MiniMax H3 wants a
-three-section audiovisual script, ...). Each spec here bakes one model's
+Z-Image ignores negative prompts, MiniMax H3 wants a sectioned audiovisual
+script, ...). Each spec here bakes one model's
 documented dialect into the system prompt of its enhancer node, plus the
 per-model quality-gate and negative-prompt defaults that dialect implies.
 
@@ -56,29 +56,6 @@ FLUX_SYSTEM = (
     "'deserted street' instead of 'no people')."
 )
 
-SDXL_SYSTEM = (
-    "You are an expert prompt writer for the SDXL image generation model. Rewrite the "
-    "user's prompt for SDXL: start with the medium (photograph, painting, illustration, "
-    "sketch), then the subject as specific comma-separated tags with the most important "
-    "elements first, then scene, pose and composition, then style, artist and movement "
-    "keywords, and finally finishing touches and quality modifiers at the end. Prefer "
-    "well-known, specific tags over vague ones, and use short natural-language phrases "
-    "only where tags cannot express the idea. Use at most one or two modest (emphasis) "
-    "groups; heavy attention modifiers overbake results. Keep every subject, action, and "
-    "style the user intended."
-)
-
-SD15_SYSTEM = (
-    "You are an expert prompt writer for SD 1.5 models trained on booru datasets. "
-    "Rewrite the user's prompt as a compact list of comma-separated booru-style tags - "
-    "no sentences, no filler words, no (weights) syntax. Lead with quality tags (best "
-    "quality, amazing quality for anime-style models; photo, raw photo for "
-    "photorealistic), then subject tags, then action and pose, clothing, expression, "
-    "scene and background, lighting, style, and camera. Use established single-phrase "
-    "tags and keep the list under about 35 tags. Keep every subject, action, and style "
-    "the user intended."
-)
-
 KREA2_SYSTEM = (
     "You are an expert prompt writer for the Krea 2 image generation model. Rewrite the "
     "user's prompt as a vivid, detailed natural-language paragraph - Krea 2 reads full "
@@ -88,16 +65,6 @@ KREA2_SYSTEM = (
     "palette, camera framing and composition. Keep to one style and one medium per "
     "prompt. If the user wants exact text rendered in the image, keep that text in "
     "double quotes. Do not add watermarks, text, or signatures unless the user asks."
-)
-
-CHROMA_SYSTEM = (
-    "You are an expert prompt writer for the Chroma image model, an SD 3.5 style FLUX "
-    "rebuild that also supports a real negative prompt. Rewrite the user's prompt as a "
-    "single prose caption in this fixed order: [Medium] of [subject and styling]. The "
-    "image uses [light and color]. The background is [background]. [Finish]. Write full "
-    "sentences, never a list of tags. Name the medium explicitly (photograph, linocut, "
-    "watercolor, Polaroid) and specify the palette concretely. Keep the caption to one "
-    "tight paragraph and keep every subject, action, and style the user intended."
 )
 
 ZIMAGE_SYSTEM = (
@@ -174,36 +141,11 @@ ENHANCER_SPECS: list[EnhancerSpec] = [
         category="LlamaServer/LLM",
     ),
     EnhancerSpec(
-        node_id="SDXLPromptEnhancer",
-        display_name="SDXL Prompt Enhancer (LLM Server)",
-        description="Enhance a prompt for SDXL models: medium first, important tags up front, light natural-language detail.",
-        system_prompt=SDXL_SYSTEM,
-        category="LlamaServer/LLM",
-        default_generate_negative=True,
-    ),
-    EnhancerSpec(
-        node_id="SD15PromptEnhancer",
-        display_name="SD1.5 Prompt Enhancer (LLM Server)",
-        description="Enhance a prompt for SD 1.5 models: compact comma-separated booru-style tags.",
-        system_prompt=SD15_SYSTEM,
-        category="LlamaServer/LLM",
-        default_min_words=10,
-        default_generate_negative=True,
-    ),
-    EnhancerSpec(
         node_id="Krea2PromptEnhancer",
         display_name="Krea 2 Prompt Enhancer (LLM Server)",
         description="Enhance a prompt for Krea 2: one detailed natural-language paragraph, one medium and one style.",
         system_prompt=KREA2_SYSTEM,
         category="LlamaServer/LLM",
-    ),
-    EnhancerSpec(
-        node_id="ChromaPromptEnhancer",
-        display_name="Chroma Prompt Enhancer (LLM Server)",
-        description="Enhance a prompt for Chroma (SD 3.5 style): one prose caption in fixed medium/light/background/finish order.",
-        system_prompt=CHROMA_SYSTEM,
-        category="LlamaServer/LLM",
-        default_generate_negative=True,
     ),
     EnhancerSpec(
         node_id="ZImagePromptEnhancer",
