@@ -1,0 +1,441 @@
+{
+ "id": "8f4258fd-1602-4be9-8d7f-87e1d54963a1",
+ "revision": 0,
+ "last_node_id": 4,
+ "last_link_id": 3,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "LoadLLMServer",
+   "pos": [
+    60,
+    260
+   ],
+   "size": [
+    360,
+    252
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "model_path",
+     "name": "model_path",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "model_path"
+     }
+    },
+    {
+     "localized_name": "llama_server_path",
+     "name": "llama_server_path",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "llama_server_path"
+     }
+    },
+    {
+     "localized_name": "ctx_size",
+     "name": "ctx_size",
+     "type": "INT",
+     "link": null,
+     "widget": {
+      "name": "ctx_size"
+     }
+    },
+    {
+     "localized_name": "mmproj_path",
+     "name": "mmproj_path",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "mmproj_path"
+     },
+     "shape": 7
+    },
+    {
+     "localized_name": "extra_server_args",
+     "name": "extra_server_args",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "extra_server_args"
+     },
+     "shape": 7
+    },
+    {
+     "localized_name": "startup_timeout",
+     "name": "startup_timeout",
+     "type": "INT",
+     "link": null,
+     "widget": {
+      "name": "startup_timeout"
+     },
+     "shape": 7
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "llm_server",
+     "name": "llm_server",
+     "type": "LLMSERVER",
+     "links": [
+      1,
+      3
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "LoadLLMServer"
+   },
+   "widgets_values": [
+    "C:/models/your-model.gguf",
+    "llama-server",
+    20480,
+    "",
+    "",
+    120
+   ],
+   "widgets_values_named": {
+    "model_path": "C:/models/your-model.gguf",
+    "llama_server_path": "llama-server",
+    "ctx_size": 20480,
+    "mmproj_path": "",
+    "extra_server_args": "",
+    "startup_timeout": 120
+   }
+  },
+  {
+   "id": 2,
+   "type": "FluxPromptEnhancer",
+   "pos": [
+    520,
+    180
+   ],
+   "size": [
+    360,
+    616
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "llm_server",
+     "name": "llm_server",
+     "type": "LLMSERVER",
+     "link": 1
+    },
+    {
+     "localized_name": "prompt",
+     "name": "prompt",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "prompt"
+     }
+    },
+    {
+     "localized_name": "system_prompt",
+     "name": "system_prompt",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "system_prompt"
+     },
+     "shape": 7
+    },
+    {
+     "localized_name": "seed",
+     "name": "seed",
+     "type": "INT",
+     "link": null,
+     "widget": {
+      "name": "seed"
+     }
+    },
+    {
+     "localized_name": "temperature",
+     "name": "temperature",
+     "type": "FLOAT",
+     "link": null,
+     "widget": {
+      "name": "temperature"
+     },
+     "shape": 7
+    },
+    {
+     "localized_name": "max_retries",
+     "name": "max_retries",
+     "type": "INT",
+     "link": null,
+     "widget": {
+      "name": "max_retries"
+     }
+    },
+    {
+     "localized_name": "min_words",
+     "name": "min_words",
+     "type": "INT",
+     "link": null,
+     "widget": {
+      "name": "min_words"
+     }
+    },
+    {
+     "localized_name": "generate_negative_prompt",
+     "name": "generate_negative_prompt",
+     "type": "BOOLEAN",
+     "link": null,
+     "widget": {
+      "name": "generate_negative_prompt"
+     },
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_0",
+     "name": "ref_images.ref_image_0",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_1",
+     "name": "ref_images.ref_image_1",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_2",
+     "name": "ref_images.ref_image_2",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_3",
+     "name": "ref_images.ref_image_3",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_4",
+     "name": "ref_images.ref_image_4",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_5",
+     "name": "ref_images.ref_image_5",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_6",
+     "name": "ref_images.ref_image_6",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_7",
+     "name": "ref_images.ref_image_7",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_8",
+     "name": "ref_images.ref_image_8",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    },
+    {
+     "localized_name": "ref_images.ref_image_9",
+     "name": "ref_images.ref_image_9",
+     "type": "IMAGE",
+     "link": null,
+     "shape": 7
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "enhanced_prompt",
+     "name": "enhanced_prompt",
+     "type": "STRING",
+     "links": [
+      2
+     ]
+    },
+    {
+     "localized_name": "negative_prompt",
+     "name": "negative_prompt",
+     "type": "STRING",
+     "links": null
+    },
+    {
+     "localized_name": "llm_server",
+     "name": "llm_server",
+     "type": "LLMSERVER",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "FluxPromptEnhancer"
+   },
+   "widgets_values": [
+    "A girl in a cyberpunk city at night, neon signs reflecting in the rain",
+    "You are an expert prompt writer for the FLUX image generation model. Rewrite the user's prompt as one coherent paragraph of natural language of 50-200 words. FLUX responds to flowing prose, not keyword lists: never use SD-style weights, (emphasis) syntax, comma-separated tags, embeddings, or LoRA references. Keep this order: subject and appearance, scene and environment, style and art direction, lighting, camera and technique, mood and colour. Put the most important elements first. Use concrete photography terms (lens, aperture, depth of field) and specific art styles instead of generic quality words like masterpiece, best quality, or 8K. Do not add watermarks, text, or signatures unless the user asks. If the user wants to exclude something, phrase it as a positive alternative (for example 'deserted street' instead of 'no people').",
+    0,
+    null,
+    3,
+    25,
+    false
+   ],
+   "widgets_values_named": {
+    "prompt": "A girl in a cyberpunk city at night, neon signs reflecting in the rain",
+    "system_prompt": "You are an expert prompt writer for the FLUX image generation model. Rewrite the user's prompt as one coherent paragraph of natural language of 50-200 words. FLUX responds to flowing prose, not keyword lists: never use SD-style weights, (emphasis) syntax, comma-separated tags, embeddings, or LoRA references. Keep this order: subject and appearance, scene and environment, style and art direction, lighting, camera and technique, mood and colour. Put the most important elements first. Use concrete photography terms (lens, aperture, depth of field) and specific art styles instead of generic quality words like masterpiece, best quality, or 8K. Do not add watermarks, text, or signatures unless the user asks. If the user wants to exclude something, phrase it as a positive alternative (for example 'deserted street' instead of 'no people').",
+    "seed": 0,
+    "temperature": null,
+    "max_retries": 3,
+    "min_words": 25,
+    "generate_negative_prompt": false
+   }
+  },
+  {
+   "id": 3,
+   "type": "SaveText",
+   "pos": [
+    1000,
+    120
+   ],
+   "size": [
+    360,
+    174
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "link": 2
+    },
+    {
+     "localized_name": "filename_prefix",
+     "name": "filename_prefix",
+     "type": "STRING",
+     "link": null,
+     "widget": {
+      "name": "filename_prefix"
+     }
+    },
+    {
+     "localized_name": "format",
+     "name": "format",
+     "type": "COMBO",
+     "link": null,
+     "widget": {
+      "name": "format"
+     }
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "_0_STRING_",
+     "name": "_0_STRING_",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "SaveText"
+   },
+   "widgets_values": [
+    "flux_enhanced_prompt",
+    "txt"
+   ],
+   "widgets_values_named": {
+    "filename_prefix": "flux_enhanced_prompt",
+    "format": "txt"
+   }
+  },
+  {
+   "id": 4,
+   "type": "CloseLLMServer",
+   "pos": [
+    1000,
+    340
+   ],
+   "size": [
+    360,
+    96
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "llm_server",
+     "name": "llm_server",
+     "type": "LLMSERVER",
+     "link": 3
+    }
+   ],
+   "outputs": [],
+   "properties": {
+    "Node name for S&R": "CloseLLMServer"
+   },
+   "widgets_values": [],
+   "widgets_values_named": {}
+  }
+ ],
+ "links": [
+  [
+   1,
+   1,
+   0,
+   2,
+   0,
+   "LLMSERVER"
+  ],
+  [
+   2,
+   2,
+   0,
+   3,
+   0,
+   "STRING"
+  ],
+  [
+   3,
+   1,
+   0,
+   4,
+   0,
+   "LLMSERVER"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {
+  "ds": {
+   "scale": 1.0,
+   "offset": [
+    0,
+    0
+   ]
+  }
+ },
+ "version": 0.4
+}
