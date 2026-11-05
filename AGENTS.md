@@ -7,13 +7,21 @@ lives.
 ## What this is
 
 A ComfyUI custom node that starts a local llama.cpp `llama-server` and exposes
-five nodes that all share **one** connection to that model:
+a set of nodes that all share **one** connection to that model:
 
 - `LoadLLMServer` - start (or reuse a warm) server, emit the connection.
 - `CloseLLMServer` - stop the server, free VRAM.
 - `LLMPrompt` - generic system + user prompt -> response.
 - `PromptEnhancer` - enhance a prompt (+ optional negative prompt).
 - `RulesChecker` - judge free-form text against free-form rules.
+- `ImageRulesChecker` - judge generated image(s) against free-form rules
+  (vision model + mmproj required).
+- One enhancer per target model, built by a factory from data-driven specs:
+  `FluxPromptEnhancer`, `SDXLPromptEnhancer`, `SD15PromptEnhancer`,
+  `Krea2PromptEnhancer`, `ChromaPromptEnhancer`, `ZImagePromptEnhancer`,
+  `QwenImagePromptEnhancer`, `MiniMaxH3PromptEnhancer`, `Wan22PromptEnhancer`
+  (same shape as `PromptEnhancer`, but with the model's documented prompt
+  dialect baked into the system-prompt default).
 
 The core UX win over a cold-start-per-run design: the server is started once and
 kept **warm** for the ComfyUI session, so repeated queue items reuse it instead
@@ -28,25 +36,30 @@ Two layers, split deliberately:
   lazy, `try/except ImportError` imports of `comfy.model_management` inside
   `check_interrupt()` / `free_gpu_memory()` (no-op outside ComfyUI). This keeps
   them unit-testable without the ComfyUI runtime on the path.
-- **Comfy-dependent modules** (`node_base.py`, `nodes.py`) import
-  `comfy_api.latest.io` at module scope and are only importable inside the
-  ComfyUI runtime (or with it on the path in tests).
+- **Pure-data module** (`presets.py`): the `EnhancerSpec` NamedTuple plus
+  `ENHANCER_SPECS`, the per-model dialect system prompts and quality-gate
+  defaults for the per-model enhancers. No imports at all - keep it that way.
+- **Comfy-dependent modules** (`node_base.py`, `nodes.py`, `model_nodes.py`)
+  import `comfy_api.latest.io` at module scope and are only importable inside
+  the ComfyUI runtime (or with it on the path in tests).
 
-Do not add `comfy_api` imports to the pure-logic modules, and do not add a new
-third-party dependency (the node is stdlib-only by design).
+Do not add `comfy_api` imports to the pure-logic/data modules, and do not add
+a new third-party dependency (the node is stdlib-only by design).
 
 ## File layout
 
 | File | Role |
 |---|---|
-| `__init__.py` | Registers `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` via a `try: from .nodes import ... except ImportError:` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
-| `nodes.py` | The five `io.ComfyNode` classes, the mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
+| `__init__.py` | Merges the mappings from `.nodes` and `.model_nodes` into `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` inside a `try/except` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
+| `nodes.py` | The five base `io.ComfyNode` classes (Load/Close/LLMPrompt/PromptEnhancer/RulesChecker), the base mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
+| `presets.py` | Pure data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, min-words and negative-prompt defaults). |
+| `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
 | `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `kill_server`); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `atexit`). |
 | `client.py` | HTTP chat client: `chat_completion`, `chat_completion_interruptible`, `build_user_content`, `_payload`, image-to-base64-JPEG, context-error detection, timing log. |
 | `enhance.py` | `enhance_prompt` + the quality gate (`is_good_prompt`: min words, refusal patterns, Jaccard echo) + lenient JSON parsing. |
-| `judge.py` | `check_rules` + `CheckResult` + verdict parsing. |
-| `tests/` | `conftest.py` (path setup + `FakeProc` + fake-server fixtures) and one test file per logic module + the node layer. |
+| `judge.py` | `check_rules` (text and/or images via the `images=` kwarg; vision path uses `_judge_image_system_prompt`) + `CheckResult` + verdict parsing. |
+| `tests/` | `conftest.py` (path setup + `FakeProc` + fake-server fixtures) and one test file per logic module + the node layer (`test_nodes.py` for the base nodes, `test_model_nodes.py` for the factory-built enhancers, `ImageRulesChecker`, and the preset data). |
 
 ## The meta-object: `LLMServer`
 
@@ -102,12 +115,35 @@ Close is guaranteed to run last.
   `ref_images` (Autogrow, 0-9). out: `enhanced_prompt`, `negative_prompt`,
   `llm_server`. **Degrades** to passing the original prompt through when the
   model can't produce an acceptable result, so a hiccup never kills the queue.
+- **Per-model prompt enhancers** (`FluxPromptEnhancer`, `SDXLPromptEnhancer`,
+  `SD15PromptEnhancer`, `Krea2PromptEnhancer`, `ChromaPromptEnhancer`,
+  `ZImagePromptEnhancer`, `QwenImagePromptEnhancer` under `LlamaServer/LLM`;
+  `MiniMaxH3PromptEnhancer`, `Wan22PromptEnhancer` under `LlamaServer/Video`) -
+  built by `_build_enhancer_node(spec)` in `model_nodes.py` from
+  `presets.ENHANCER_SPECS` (one spec per model: node_id, display_name,
+  description, dialect system prompt, category, `default_min_words`,
+  `default_generate_negative`). Same inputs/outputs as `PromptEnhancer`, but
+  `system_prompt` defaults to the model's dialect (still user-editable), and
+  `min_words` / `generate_negative_prompt` default from the spec (SD1.5: 10
+  words; Z-Image: 40; MiniMax H3: 50; negative prompt on by default for SDXL,
+  SD1.5, Chroma only). Same **degrade** semantics as `PromptEnhancer`.
+  `MODEL_ENHANCER_NODES` maps node_id -> built class. The classes are built via
+  `type()` (dynamic class creation); they are ordinary `io.ComfyNode`
+  subclasses, nothing else is dynamic.
 - **RulesChecker** - in: `llm_server`, `text`, `rules`, `abort_on_fail` (default
   True), `seed`, `temperature`. out: `text_out`, `judgement`, `llm_server`.
   Empty text OR empty rules bypass (passes text through). `ok=False` (no
   parseable verdict - an infra failure) **raises**. `fail + abort_on_fail`
   **raises** `RuntimeError("Rules check failed: ...")`; `fail + not abort_on_fail`
   returns the judgement on the `judgement` output.
+- **ImageRulesChecker** - in: `llm_server`, `rules` (optional), `images`
+  (Autogrow, 0-9, VAE-decoded tensors), `abort_on_fail` (default True), `seed`,
+  `temperature`. out: `judgement`, `llm_server` (no image passthrough - it is a
+  pure gate; fan the image to the save/next node separately). No images OR
+  empty rules bypass (returns `("", server)`). `ok=False` **raises** `RuntimeError`
+  (mentions the vision/mmproj requirement). `fail + abort_on_fail` **raises**
+  `RuntimeError("Image rules check failed: ...")`; `fail + not abort_on_fail`
+  returns the reason on `judgement`. Calls `check_rules(server, "", rules, ..., images=...)`.
 
 The Enhancer/Rules quality-gate and verdict logic lives in `enhance.py` /
 `judge.py`, not in the nodes - the node just maps inputs and maps the result to
@@ -116,13 +152,15 @@ outputs.
 ## Conventions
 
 - **Dual import pattern** in `client.py` / `enhance.py` / `judge.py` /
-  `nodes.py`: `try: from .x import ... except ImportError: from x import ...`.
-  This lets the logic be unit-tested directly (top-level import) while still
-  working when ComfyUI loads the hyphenated package (relative import). Keep it
-  if you add cross-module imports in those files. `server.py` and `node_base.py`
-  use plain imports (server has no relatives; node_base only needs `comfy_api`).
+  `nodes.py` / `model_nodes.py`: `try: from .x import ... except ImportError:
+  from x import ...`. This lets the logic be unit-tested directly (top-level
+  import) while still working when ComfyUI loads the hyphenated package
+  (relative import). Keep it if you add cross-module imports in those files.
+  `server.py` and `node_base.py` use plain imports (server has no relatives;
+  node_base only needs `comfy_api`); `presets.py` has no imports at all.
 - **Failure semantics are per-node and intentional** (see above). Do not make
-  `LLMPrompt`/`RulesChecker` silent on failure, or make `PromptEnhancer` raise.
+  `LLMPrompt`/`RulesChecker`/`ImageRulesChecker` silent on failure, or make
+  `PromptEnhancer` (or any per-model enhancer) raise.
 - Keep files under ~500 lines and functions under ~50 lines; keep comments
   sparse (only the "why").
 - No internet access except the local `llama-server` on `127.0.0.1`; the only
@@ -165,7 +203,10 @@ uv run --no-sync --with pytest pytest custom_nodes/ComfyUI-LlamaServer-Helpers/t
 Mocking conventions:
 - Node logic is mocked by `monkeypatch.setattr(nodes, "<fn>", ...)` where `<fn>`
   is one of `chat_completion_interruptible`, `enhance_prompt`, `check_rules`,
-  `close_server`, `get_or_start_server`.
+  `close_server`, `get_or_start_server`. The `model_nodes` module is mocked the
+  same way (its `enhance_prompt` / `check_rules` are its own module-level
+  names, so patch on `model_nodes`, not on `nodes`); the per-model enhancer
+  classes are pulled from `model_nodes.MODEL_ENHANCER_NODES[node_id]`.
 - HTTP is mocked by `monkeypatch.setattr(<mod>.request, "urlopen", ...)`
   returning a tiny context-manager (`.status`, `.read()`).
 - The warm cache is tested by `monkeypatch.setattr(server, "start_server" /

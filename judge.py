@@ -1,9 +1,9 @@
 """Rules-checker logic (connection-based).
 
-Sends a free-form set of RULES and a TEXT to the model and asks for a strict
-JSON verdict - whether the TEXT complies with every rule, and why not. The node
-layer turns that verdict into a passthrough, a reported judgement, or an
-abort of the workflow.
+Sends a free-form set of RULES and a TEXT and/or image(s) to the model and
+asks for a strict JSON verdict - whether the input complies with every rule,
+and why not. The node layer turns that verdict into a passthrough, a reported
+judgement, or an abort of the workflow.
 
 ComfyUI-free at module scope (interrupt check is lazy) for testability.
 """
@@ -60,6 +60,27 @@ def _judge_system_prompt(rules: str) -> str:
     )
 
 
+def _judge_image_system_prompt(rules: str) -> str:
+    """System prompt for the vision path: the user's rules plus the strict JSON
+    verdict contract, applied to image(s) instead of text."""
+    return (
+        "You are a strict rules checker. You are given a set of RULES and one or more IMAGES. "
+        "Decide whether the IMAGES comply with ALL of the rules.\n"
+        "\n"
+        f"RULES:\n{rules.strip()}\n"
+        "\n"
+        "Respond with a single JSON object and nothing else, with exactly these keys:\n"
+        "{\n"
+        '  "pass": true,\n'
+        '  "reason": ""\n'
+        "}\n"
+        '- "pass" is true only if the IMAGES satisfy every rule; otherwise false.\n'
+        '- "reason" is an empty string when pass is true. When pass is false, it is a '
+        "short, specific explanation of which rule(s) the image(s) violate and what you see "
+        "in the image(s) that violates them - plain text, no markdown, no labels."
+    )
+
+
 def _coerce_bool(value) -> bool | None:
     """Coerce a loose JSON value to a real bool, or None when it is not one."""
     if isinstance(value, bool):
@@ -100,23 +121,36 @@ def check_rules(
     seed: int = 0,
     temperature: float | None = None,
     max_retries: int = 3,
+    images=None,
 ) -> CheckResult:
-    """Judge ``text`` against ``rules`` using the given server connection.
+    """Judge ``text`` and/or ``images`` against ``rules`` using the server.
 
-    Retries (with a fresh seed) while the model returns a non-parseable verdict,
-    so a single malformed response does not cost the check. Returns a
-    :class:`CheckResult` with ``ok=False`` only when no attempt produced a
-    parseable verdict.
+    When ``images`` (a list of ComfyUI IMAGE tensors) is given, a vision system
+    prompt is used and the images are sent to a multimodal model; any ``text``
+    then travels with the request as related context (e.g. a caption to check
+    against the image). Retries (with a fresh seed) while the model returns a
+    non-parseable verdict. Returns a :class:`CheckResult` with ``ok=False`` only
+    when no attempt produced a parseable verdict.
     """
-    if not text or not text.strip():
+    has_text = bool(text and text.strip())
+    has_images = bool(images)
+    if not has_text and not has_images:
         return CheckResult(True, "", ok=True)
     check_interrupt()
 
     import random
 
     base_seed = (seed if seed >= 0 else random.getrandbits(32)) % 2**32
-    system_prompt = _judge_system_prompt(rules)
-    user_message = f"Check this TEXT:\n\n{text.strip()}"
+    if has_images:
+        system_prompt = _judge_image_system_prompt(rules)
+        user_message = "Check the attached image(s) against the rules above."
+        if has_text:
+            user_message += (
+                "\n\nRelated text (part of what is being checked):\n" + text.strip()
+            )
+    else:
+        system_prompt = _judge_system_prompt(rules)
+        user_message = f"Check this TEXT:\n\n{text.strip()}"
 
     for attempt in range(1, max_retries + 1):
         check_interrupt()
@@ -125,7 +159,12 @@ def check_rules(
             f"  [{_LOG_TAG}] Rules check attempt {attempt}/{max_retries} (seed {attempt_seed})..."
         )
         result = chat_completion_interruptible(
-            server, system_prompt, user_message, attempt_seed, temperature=temperature
+            server,
+            system_prompt,
+            user_message,
+            attempt_seed,
+            images=images,
+            temperature=temperature,
         )
         verdict = _parse_check_response(result)
         if verdict.ok:

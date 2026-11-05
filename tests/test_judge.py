@@ -88,7 +88,15 @@ def _mock_chat(monkeypatch, side_effects):
     calls = []
 
     def fake(server, system, user, seed, images=None, temperature=None):
-        calls.append({"system": system, "user": user, "seed": seed})
+        calls.append(
+            {
+                "system": system,
+                "user": user,
+                "seed": seed,
+                "images": images,
+                "temperature": temperature,
+            }
+        )
         return next(it)
 
     monkeypatch.setattr(judge, "chat_completion_interruptible", fake)
@@ -133,3 +141,52 @@ def test_check_rules_no_verdict_returns_not_ok(monkeypatch, make_fake_server):
     assert r.ok is False
     assert r.passed is False
     assert len(calls) == 2
+
+
+# --- image (vision) check path ---------------------------------------------
+
+
+def test_judge_image_system_prompt_mentions_rules_and_contract():
+    p = judge._judge_image_system_prompt("no text in the image")
+    assert "no text in the image" in p
+    assert '"pass"' in p
+    assert "IMAGES" in p
+
+
+def test_check_rules_with_images_uses_vision_prompt(monkeypatch, make_fake_server):
+    img = object()
+    calls = _mock_chat(monkeypatch, ['{"pass": true, "reason": ""}'])
+    r = judge.check_rules(_srv(make_fake_server), "", "no watermark", images=[img])
+    assert r.ok is True and r.passed is True
+    assert len(calls) == 1
+    # rules in the (vision) system prompt, image forwarded to the chat call
+    assert "no watermark" in calls[0]["system"]
+    assert "IMAGES" in calls[0]["system"]
+    assert calls[0]["images"] == [img]
+
+
+def test_check_rules_with_images_and_text_sends_both(monkeypatch, make_fake_server):
+    img = object()
+    calls = _mock_chat(
+        monkeypatch, ['{"pass": false, "reason": "caption does not match the image"}']
+    )
+    r = judge.check_rules(
+        _srv(make_fake_server),
+        "a red car",
+        "caption must match the image",
+        images=[img],
+    )
+    assert r.ok is True and r.passed is False
+    assert r.reason == "caption does not match the image"
+    # vision prompt, related text in the user message, image forwarded
+    assert "IMAGES" in calls[0]["system"]
+    assert "a red car" in calls[0]["user"]
+    assert calls[0]["images"] == [img]
+
+
+def test_check_rules_text_only_sends_no_images(monkeypatch, make_fake_server):
+    calls = _mock_chat(monkeypatch, ['{"pass": true, "reason": ""}'])
+    r = judge.check_rules(_srv(make_fake_server), "some text", "RULE", seed=1)
+    assert r.ok is True
+    assert "IMAGES" not in calls[0]["system"]
+    assert calls[0]["images"] is None
