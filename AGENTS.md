@@ -61,7 +61,7 @@ a new third-party dependency (the node is stdlib-only by design).
 | `presets/` | Six `.txt` dialect guides mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v). Keep them in sync with that package when its presets change. |
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
-| `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `kill_server`); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `atexit`). |
+| `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `atexit`). |
 | `client.py` | HTTP chat client: `chat_completion`, `chat_completion_interruptible`, `build_user_content`, `_payload`, image-to-base64-JPEG, context-error detection, timing log. |
 | `enhance.py` | `enhance_prompt` + the quality gate (`is_good_prompt`: min words, refusal patterns, Jaccard echo) + lenient JSON parsing. |
 | `judge.py` | `check_rules` (text and/or images via the `images=` kwarg; vision path uses `_judge_image_system_prompt`) + `CheckResult` + verdict parsing. |
@@ -88,15 +88,17 @@ Module-level `_warm_servers: dict[tuple, LLMServer]` guarded by `_warm_lock`
   extra_flags="", startup_timeout=120)`: if a live server with the same
   `config_key` exists, reuse it (no VRAM churn). Otherwise `free_gpu_memory()`,
   `find_free_port()`, `start_server(...)`; on failure return `None`.
-- `close_server(server)`: pop the matching cache entry (only `if server is`
-  the stored one), then `server.close()`. `close_server(None)` is a no-op.
+- `close_server(server)`: pop the matching cache entry when the stored server
+  is this object **or a different wrapper around the same process** (`_same_process`:
+  same `proc.pid`), then `server.close()`. `close_server(None)` is a no-op.
 - `close_all_servers()` + `atexit.register(close_all_servers)` are the safety
   net so a server is never left running when the process exits.
 
 Invariants: a server is only ever started on a **cold** path (warm reuse never
-calls `free_gpu_memory`); `close_server` must match on identity, not just
-`config_key`, so a stale cache entry from a previous config is never torn down
-by mistake.
+calls `free_gpu_memory`); `close_server` must match on process identity (same
+object, or a different wrapper with the same `proc.pid`), never just
+`config_key`, so a *newer* server for the same config is never torn down by
+mistake.
 
 ## The nodes: inputs, outputs, failure semantics
 
@@ -205,6 +207,16 @@ outputs.
 - **No em/en dashes** in code/comments/docs - use single hyphens.
 - Never kill a process by image name, never write to `nul`, and never modify
   `C:\Dev\ComfyUI\.venv`.
+- **`kill_server` kills the process tree, by our PID, never by image name.**
+  On Windows it runs `taskkill /F /T /PID <pid>` (POSIX falls back to
+  terminate -> SIGKILL). This is required because `llama_server_path` may be a
+  wrapper (.bat/.cmd/shim) or the llama-server router mode, which spawn the
+  real model server as a *child*: a plain `proc.terminate()` would kill only
+  the wrapper and orphan the model server (and its VRAM). The same binary
+  really does have a router mode (`--models-preset ... --port ...`) that
+  spawns the model server as a child process. Never use
+  `taskkill /IM llama-server.exe`: this machine also runs the agent's own
+  llama-server on port 8080, and by-image kills would take it down.
 
 ## Testing
 
@@ -229,6 +241,12 @@ Mocking conventions:
   "find_free_port" / "free_gpu_memory", fake)` returning a fake `LLMServer`
   backed by `conftest.FakeProc`. `fake_server` / `make_fake_server` fixtures
   clear `_warm_servers` around each test.
+- An **autouse** `fake_tree_kill` fixture (conftest) replaces
+  `server._kill_process_tree` in every test - `FakeProc` PIDs are arbitrary
+  and could collide with live host processes, so the real `taskkill` must
+  never run in tests. It yields `(calls, real_fn)`; the one real-process
+  integration test (`test_kill_process_tree_kills_wrapper_children`,
+  Windows-only) restores `real_fn` via monkeypatch.
 
 ## Lint / format
 
