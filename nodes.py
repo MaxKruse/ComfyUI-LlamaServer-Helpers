@@ -157,7 +157,10 @@ class CloseLLMServer(io.ComfyNode):
             category="LlamaServer",
             description="Stop the llama-server process and release its VRAM. Put this after the last LLM node that uses the connection.",
             inputs=[
-                LLMServerType.Input("llm_server", tooltip="The connection to close.")
+                LLMServerType.Input(
+                    "llm_server",
+                    tooltip="The connection to close. Connect this to the llm_server output of your last LLM node (e.g. the enhancer), not to the Load node - the connection is what makes Close wait for that node to finish first.",
+                )
             ],
             outputs=[],
             hidden=[io.Hidden.unique_id],

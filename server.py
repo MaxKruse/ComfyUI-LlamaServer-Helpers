@@ -239,22 +239,56 @@ def discover_model_name(base_url: str) -> str:
     return "llama"
 
 
+def _kill_process_tree(pid: int) -> bool:
+    """Force-kill a process and every process it spawned (Windows only).
+
+    ``llama_server_path`` may be a wrapper (.bat/.cmd/shim, or the
+    llama-server router mode) that launches the real model server as a child;
+    killing only the direct child would orphan the actual llama-server and its
+    VRAM. ``taskkill /T`` walks the tree rooted at the PID we spawned - never
+    by image name, so unrelated llama-server processes are untouched.
+    Returns True when the tree kill was attempted, False to fall back to the
+    plain terminate/kill path.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            check=False,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def kill_server(proc: subprocess.Popen | None):
-    """Terminate the server subprocess and wait for it to exit."""
+    """Terminate the server process (and any children it spawned) and wait."""
     if proc is None:
         return
     pid = proc.pid
     _print_safe(f"  [{_LOG_TAG}] Stopping llama-server (pid={pid})...")
     try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "llama-server (pid=%s) did not terminate, sending SIGKILL", pid
-            )
-            proc.kill()
-            proc.wait(timeout=3)
+        if _kill_process_tree(pid):
+            # taskkill already force-killed the tree; just reap our child.
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "llama-server (pid=%s) did not terminate, sending SIGKILL", pid
+                )
+                proc.kill()
+                proc.wait(timeout=3)
     except Exception:
         logger.exception("Error stopping llama-server")
     finally:
@@ -425,13 +459,26 @@ def get_or_start_server(
     return server
 
 
+def _same_process(a: LLMServer, b: LLMServer) -> bool:
+    """True when two connections wrap the very same operating-system process."""
+    return a is b or (
+        a.proc is not None and b.proc is not None and a.proc.pid == b.proc.pid
+    )
+
+
 def close_server(server: LLMServer | None) -> None:
-    """Stop one server and drop it from the warm cache. Idempotent."""
+    """Stop one server and drop it from the warm cache. Idempotent.
+
+    The cache entry is dropped when the stored server is this object, or a
+    different wrapper around the same process (duplicate objects can flow
+    through the graph). A different PID - a newer server for the same config -
+    is never torn down by mistake.
+    """
     if server is None:
         return
     with _warm_lock:
         current = _warm_servers.get(server.config_key)
-        if current is server:
+        if current is not None and _same_process(current, server):
             _warm_servers.pop(server.config_key, None)
     server.close()
 

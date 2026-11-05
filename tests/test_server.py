@@ -2,9 +2,12 @@
 
 import json
 import socket
+import subprocess
 import sys
 import types
 from urllib import error
+
+import pytest
 
 import server
 from conftest import FakeProc
@@ -70,10 +73,68 @@ def test_llmserver_is_alive_and_close(make_fake_server):
     s.close()
     assert s.closed
     assert not s.is_alive()
-    assert proc.terminated
+    # the child is reaped in both the tree-kill and graceful-kill paths
+    assert proc.wait_called
     # idempotent
     s.close()
     assert not proc.killed
+
+
+# --- kill_server -----------------------------------------------------------
+
+
+def test_kill_server_tree_kill_path(fake_tree_kill):
+    # Windows path: taskkill takes the whole tree, no graceful terminate.
+    calls, _real = fake_tree_kill
+    proc = FakeProc()
+    server.kill_server(proc)
+    assert calls == [proc.pid]
+    assert not proc.terminated and not proc.killed
+    assert proc.wait_called
+
+
+def test_kill_server_fallback_terminate(fake_tree_kill, monkeypatch):
+    # POSIX / taskkill unavailable: graceful terminate, no SIGKILL when the
+    # process exits in time.
+    calls, _real = fake_tree_kill
+    monkeypatch.setattr(server, "_kill_process_tree", lambda pid: False)
+    proc = FakeProc()
+    server.kill_server(proc)
+    assert calls == []
+    assert proc.terminated and not proc.killed
+    assert proc.wait_called
+
+
+def test_kill_server_none_proc_is_noop(fake_tree_kill):
+    server.kill_server(None)  # must not raise
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="taskkill is Windows-only")
+def test_kill_process_tree_kills_wrapper_children(fake_tree_kill, monkeypatch):
+    # The real-world failure this guards: a wrapper/router (.bat/.cmd/shim,
+    # llama-server router mode) spawns the actual model server as a child; a
+    # plain proc.terminate() would kill only the wrapper and orphan the server
+    # (and its VRAM). kill_server must take down the whole tree.
+    _calls, real = fake_tree_kill
+    monkeypatch.setattr(server, "_kill_process_tree", real)
+    wrapper = subprocess.Popen(
+        ["cmd", "/c", "ping", "-n", "300", "127.0.0.1"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        server.kill_server(wrapper)
+    finally:
+        if wrapper.poll() is None:
+            wrapper.kill()
+    assert wrapper.poll() is not None
+    children = subprocess.run(
+        ["tasklist", "/FI", f"PARENTPID eq {wrapper.pid}", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert children.strip() == "", f"orphaned children survived: {children}"
 
 
 def test_llmserver_config_key_distinct():
@@ -287,6 +348,30 @@ def test_close_server_removes_from_cache(monkeypatch, make_fake_server):
     assert a not in server._warm_servers.values()
     assert a.closed
     server.close_all_servers()
+
+
+def test_close_server_pops_duplicate_wrapper(make_fake_server):
+    # A second wrapper object around the same process must still drop the
+    # cache entry when closed (duplicate objects can flow through the graph).
+    proc = FakeProc()
+    original = make_fake_server(proc=proc)
+    server._warm_servers[original.config_key] = original
+    duplicate = make_fake_server(proc=proc)
+    assert duplicate is not original
+    server.close_server(duplicate)
+    assert original.config_key not in server._warm_servers
+    assert duplicate.closed and not original.closed
+
+
+def test_close_server_keeps_newer_server_for_same_config(make_fake_server):
+    # A stale object must not evict a newer server (different PID) that is
+    # currently cached for the same config.
+    stale = make_fake_server(proc=FakeProc(pid=1111))
+    fresh = make_fake_server(proc=FakeProc(pid=2222))
+    server._warm_servers[fresh.config_key] = fresh
+    server.close_server(stale)
+    assert fresh.config_key in server._warm_servers
+    assert not fresh.closed
 
 
 def test_close_server_none_is_noop():

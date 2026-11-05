@@ -21,11 +21,12 @@ for _p in (COMFYUI_ROOT, NODE_PACKAGE_ROOT):
 class FakeProc:
     """Just enough of subprocess.Popen to exercise the lifecycle code."""
 
-    def __init__(self, exit_code=None):
+    def __init__(self, exit_code=None, pid=4242):
         self._exit = exit_code
         self.terminated = False
         self.killed = False
-        self.pid = 4242
+        self.wait_called = False
+        self.pid = pid
 
     def poll(self):
         return self._exit
@@ -39,6 +40,7 @@ class FakeProc:
         self._exit = -9
 
     def wait(self, timeout=None):
+        self.wait_called = True
         return self._exit
 
 
@@ -67,6 +69,28 @@ def _clear_warm_cache():
 
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def fake_tree_kill(monkeypatch):
+    """Keep kill_server's taskkill path hermetic.
+
+    kill_server force-kills by PID and FakeProc PIDs are arbitrary - they may
+    collide with live host processes, so the real taskkill must never run in
+    tests. Yields (calls, real_fn); a test that wants the real process-tree
+    kill restores real_fn via monkeypatch.
+    """
+    import server
+
+    real = server._kill_process_tree
+    calls = []
+
+    def _fake(pid):
+        calls.append(pid)
+        return True
+
+    monkeypatch.setattr(server, "_kill_process_tree", _fake)
+    yield calls, real
 
 
 @pytest.fixture
