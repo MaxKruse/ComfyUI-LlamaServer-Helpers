@@ -30,7 +30,7 @@ try:
         require_model_path,
         resolve_server_path,
     )
-    from .server import close_server, get_or_start_server
+    from .server import close_server, get_or_start_server, server_generation
 except ImportError:
     from client import chat_completion_interruptible
     from enhance import enhance_prompt
@@ -42,7 +42,7 @@ except ImportError:
         require_model_path,
         resolve_server_path,
     )
-    from server import close_server, get_or_start_server
+    from server import close_server, get_or_start_server, server_generation
 
 
 class LoadLLMServer(io.ComfyNode):
@@ -141,6 +141,14 @@ class LoadLLMServer(io.ComfyNode):
                 "server output. Lower ctx_size if the model cannot fit."
             )
         return io.NodeOutput(server)
+
+    @classmethod
+    def fingerprint_inputs(cls, **inputs):
+        # Cache key tied to the server start generation: when a llama-server is
+        # (re)started this changes, so ComfyUI's output cache misses and Load
+        # re-runs - guaranteeing a fresh, live server is emitted, never a stale
+        # (closed) one cached from an earlier prompt.
+        return server_generation()
 
 
 class CloseLLMServer(io.ComfyNode):

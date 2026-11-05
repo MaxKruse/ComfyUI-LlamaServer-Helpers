@@ -384,3 +384,40 @@ def test_get_or_start_returns_none_on_failed_cold_start(monkeypatch):
     monkeypatch.setattr(server, "free_gpu_memory", lambda: None)
     assert server.get_or_start_server("llama-server", "/m/a.gguf", 2048) is None
     server.close_all_servers()
+
+
+# --- start generation (Load node cache fingerprint) ------------------------
+
+
+def test_generation_increments_on_cold_start(monkeypatch, make_fake_server):
+    started = _patch_start(monkeypatch, make_fake_server)
+    before = server.server_generation()
+    server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
+    assert len(started) == 1
+    assert server.server_generation() == before + 1
+    server.close_all_servers()
+
+
+def test_generation_unchanged_on_warm_reuse(monkeypatch, make_fake_server):
+    started = _patch_start(monkeypatch, make_fake_server)
+    server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
+    after_start = server.server_generation()
+    server.get_or_start_server("llama-server", "/m/a.gguf", 2048)  # warm reuse
+    assert len(started) == 1
+    assert server.server_generation() == after_start
+    server.close_all_servers()
+
+
+def test_generation_increments_on_restart_after_close(monkeypatch, make_fake_server):
+    # The regression the fingerprint guards: after a Close tears the server
+    # down, the next start must bump the generation so the Load node's cache
+    # misses and a fresh (live) server is emitted, not the stale closed one.
+    started = _patch_start(monkeypatch, make_fake_server)
+    a = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
+    server.close_server(a)
+    after_close = server.server_generation()
+    b = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
+    assert b is not a
+    assert len(started) == 2
+    assert server.server_generation() == after_close + 1
+    server.close_all_servers()

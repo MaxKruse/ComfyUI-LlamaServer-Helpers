@@ -14,6 +14,7 @@ import pytest
 
 import node_base
 import nodes
+import server
 from enhance import EnhanceResult
 from judge import CheckResult
 
@@ -303,3 +304,11 @@ def test_close_fingerprint_is_nan():
     # Closing is a side effect: it must re-run every time, never be served from
     # the persistent output cache (NaN != NaN, so the cache always misses).
     assert math.isnan(nodes.CloseLLMServer.fingerprint_inputs())
+
+
+def test_load_fingerprint_tracks_generation(monkeypatch):
+    # Load's cache key is the server start-generation, so it changes exactly
+    # when a server (re)starts and the output cache never serves a stale
+    # (closed) connection.
+    monkeypatch.setattr(server, "_server_start_generation", 7)
+    assert nodes.LoadLLMServer.fingerprint_inputs() == 7
