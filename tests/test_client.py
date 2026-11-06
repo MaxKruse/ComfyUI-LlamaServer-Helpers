@@ -13,20 +13,12 @@ import client
 
 
 def _srv(**kw):
-    from server import LLMServer
-    from conftest import FakeProc
+    # A handle with a pre-seeded warm process: chat's ensure_live hits the
+    # warm cache and starts nothing.
+    from conftest import fake_handle
 
-    d = dict(
-        base_url="http://127.0.0.1:9999",
-        model_name="m",
-        proc=FakeProc(),
-        port=9999,
-        model_path="/m.gguf",
-        ctx_size=1024,
-        server_path="s",
-    )
-    d.update(kw)
-    return LLMServer(**d)
+    kw.setdefault("model_name", "m")
+    return fake_handle(**kw)
 
 
 def test_payload_no_sampling_params():
@@ -185,6 +177,68 @@ def test_chat_completion_sends_auth_and_model(monkeypatch):
     assert calls["timeout"] == client._REQUEST_TIMEOUT
 
 
+# --- lazy start (the handle may not have a process yet) ---------------------
+
+
+def _patch_lazy_start(monkeypatch):
+    """Patch the process spawn behind ensure_live. Returns the started list."""
+    import server
+    from conftest import fake_process
+
+    started = []
+
+    def fake_start(
+        server_path,
+        model_path,
+        port,
+        ctx_size,
+        mmproj_path="",
+        extra_flags="",
+        startup_timeout=120,
+    ):
+        p = fake_process(
+            port=port,
+            model_path=model_path,
+            ctx_size=ctx_size,
+            server_path=server_path,
+            base_url=f"http://127.0.0.1:{port}",
+        )
+        started.append(p)
+        return p
+
+    monkeypatch.setattr(server, "start_server", fake_start)
+    monkeypatch.setattr(server, "find_free_port", lambda: 12345)
+    monkeypatch.setattr(server, "free_gpu_memory", lambda: None)
+    return started
+
+
+def test_chat_completion_lazy_starts_server(monkeypatch):
+    # A handle straight from Load has no live process: the first chat must
+    # cold-start the server and then talk to it.
+    import server
+
+    started = _patch_lazy_start(monkeypatch)
+    _patch_urlopen(monkeypatch, payload={"choices": [{"message": {"content": "hi"}}]})
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    out = client.chat_completion(h, "s", "u", 1)
+    assert out == "hi"
+    assert len(started) == 1
+    assert h.is_alive()
+
+
+def test_chat_completion_start_failure_raises(monkeypatch):
+    # A failed cold start (missing binary, model too big) is a hard
+    # infrastructure error: it must surface, not return a silent None.
+    import server
+
+    monkeypatch.setattr(server, "start_server", lambda *a, **k: None)
+    monkeypatch.setattr(server, "find_free_port", lambda: 12345)
+    monkeypatch.setattr(server, "free_gpu_memory", lambda: None)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    with pytest.raises(server.LLMServerStartError):
+        client.chat_completion(h, "s", "u", 1)
+
+
 # --- chat_completion_interruptible -----------------------------------------
 
 
@@ -204,3 +258,19 @@ def test_chat_completion_interruptible_kills_server_on_interrupt(
     with pytest.raises(exc):
         client.chat_completion_interruptible(srv, "s", "u", 1)
     assert not srv.is_alive()
+
+
+def test_chat_completion_interruptible_interrupt_during_start(
+    monkeypatch, interrupting_comfy
+):
+    # An interrupt while the handle resolves a live process must propagate
+    # as an interrupt (the run aborts), not become a silent None response.
+    import server
+
+    exc = interrupting_comfy
+    monkeypatch.setattr(server, "start_server", lambda *a, **k: None)
+    monkeypatch.setattr(server, "find_free_port", lambda: 12345)
+    monkeypatch.setattr(server, "free_gpu_memory", lambda: None)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    with pytest.raises(exc):
+        client.chat_completion_interruptible(h, "s", "u", 1)

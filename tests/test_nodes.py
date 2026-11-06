@@ -1,9 +1,10 @@
 """Tests for the node layer: path validators and node execute() behavior.
 
 The LLM/HTTP logic is mocked out (chat_completion_interruptible / enhance_prompt
-/ check_rules / close_server / get_or_start_server) so these tests exercise only
-the nodes' own logic: bypass handling, output shapes, judgement reporting, the
-Close node's close-then-abort behaviour, and error paths.
+/ check_rules / close_server / the server start behind the handle) so these
+tests exercise only the nodes' own logic: bypass handling, output shapes,
+judgement reporting, the Close node's close-then-abort behaviour, and error
+paths.
 """
 
 import math
@@ -264,26 +265,13 @@ def test_close_closes_before_aborting(monkeypatch, make_fake_server):
 # --- LoadLLMServer ---------------------------------------------------------
 
 
-def test_load_returns_server(monkeypatch, make_fake_server, tmp_path):
+def test_load_returns_handle_without_starting(monkeypatch, tmp_path):
+    # Load is now a pure producer: it emits a handle and never starts the
+    # model (the process starts lazily on first real use by a consumer).
     model = tmp_path / "model.gguf"
     model.write_bytes(b"x")
-    srv = make_fake_server()
-    captured = {}
-
-    def fake_get(
-        server_path,
-        model_path,
-        ctx_size,
-        mmproj_path="",
-        extra_flags="",
-        startup_timeout=120,
-    ):
-        captured.update(
-            server_path=server_path, model_path=model_path, ctx_size=ctx_size
-        )
-        return srv
-
-    monkeypatch.setattr(nodes, "get_or_start_server", fake_get)
+    started = []
+    monkeypatch.setattr(server, "start_server", lambda *a, **k: started.append(1))
     out = nodes.LoadLLMServer.execute(
         model_path=str(model),
         llama_server_path="llama-server",
@@ -292,22 +280,19 @@ def test_load_returns_server(monkeypatch, make_fake_server, tmp_path):
         extra_server_args="",
         startup_timeout=60,
     )
-    assert out[0] is srv
-    assert captured["ctx_size"] == 4096
-    assert captured["server_path"] == "llama-server"
+    h = out[0]
+    assert isinstance(h, server.LLMServer)
+    assert not h.is_alive()
+    assert started == []
+    assert h.model_path == str(model.resolve())
+    assert h.server_path == "llama-server"
+    assert h.ctx_size == 4096
+    assert h.startup_timeout == 60
 
 
 def test_load_missing_model_raises(monkeypatch, make_fake_server):
     with pytest.raises(ValueError, match="does not exist"):
         nodes.LoadLLMServer.execute(model_path=_missing_model_path(), ctx_size=2048)
-
-
-def test_load_failed_start_raises(monkeypatch, make_fake_server, tmp_path):
-    model = tmp_path / "model.gguf"
-    model.write_bytes(b"x")
-    monkeypatch.setattr(nodes, "get_or_start_server", lambda *a, **k: None)
-    with pytest.raises(RuntimeError, match="Failed to start"):
-        nodes.LoadLLMServer.execute(model_path=str(model), ctx_size=2048)
 
 
 # --- scheduling & caching (output-node flags + fingerprints) ---------------
@@ -330,9 +315,11 @@ def test_close_fingerprint_is_nan():
     assert math.isnan(nodes.CloseLLMServer.fingerprint_inputs())
 
 
-def test_load_fingerprint_tracks_generation(monkeypatch):
-    # Load's cache key is the server start-generation, so it changes exactly
-    # when a server (re)starts and the output cache never serves a stale
-    # (closed) connection.
-    monkeypatch.setattr(server, "_server_start_generation", 7)
-    assert nodes.LoadLLMServer.fingerprint_inputs() == 7
+def test_load_has_no_fingerprint_override():
+    # Load must be cacheable purely by its inputs (the model config is the
+    # signature). It overrides no fingerprint: an override would make Load
+    # re-run (or force the whole downstream tree to re-run) whenever the
+    # returned value changes - which is exactly what broke same-seed caching.
+    from comfy_api.internal import first_real_override
+
+    assert first_real_override(nodes.LoadLLMServer, "fingerprint_inputs") is None

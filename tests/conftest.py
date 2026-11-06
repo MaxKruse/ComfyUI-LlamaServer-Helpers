@@ -3,8 +3,8 @@
 Puts the ComfyUI root (for ``comfy_api``) and this package root (for the
 ``server`` / ``client`` / ``enhance`` / ``judge`` / ``node_base`` / ``nodes``
 modules) on sys.path so the modules import directly without the hyphenated
-package name. Also provides a fake process and a fake LLMServer connection for
-the node and cache tests.
+package name. Also provides a fake process and fake server handles for the
+node and cache tests.
 """
 
 import os
@@ -45,8 +45,9 @@ class FakeProc:
         return self._exit
 
 
-def _make_fake_server(proc=None, **overrides):
-    from server import LLMServer
+def fake_process(proc=None, **overrides):
+    """A fake live server process (the object ``start_server`` returns)."""
+    from server import LLMServerProcess
 
     defaults = dict(
         base_url="http://127.0.0.1:9999",
@@ -60,7 +61,29 @@ def _make_fake_server(proc=None, **overrides):
         extra_flags="",
     )
     defaults.update(overrides)
-    return LLMServer(**defaults)
+    return LLMServerProcess(**defaults)
+
+
+def fake_handle(proc=None, **overrides):
+    """A server handle with a pre-seeded warm process (the common test shape).
+
+    ``overrides`` apply to the process (``model_name``, ``proc``, ...); the
+    config fields (``server_path`` / ``model_path`` / ``ctx_size`` / ...)
+    propagate into the handle. Returns the handle.
+    """
+    import server
+
+    process = fake_process(proc=proc, **overrides)
+    handle = server.LLMServer(
+        process.server_path,
+        process.model_path,
+        process.ctx_size,
+        mmproj_path=process.mmproj_path,
+        extra_flags=process.extra_flags,
+    )
+    server._warm_servers[handle.config_key] = process
+    handle._live = process
+    return handle
 
 
 def _clear_warm_cache():
@@ -70,6 +93,14 @@ def _clear_warm_cache():
 
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def clean_warm_cache():
+    """Every test starts and ends with an empty warm cache."""
+    _clear_warm_cache()
+    yield
+    _clear_warm_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -117,14 +148,11 @@ def interrupting_comfy(monkeypatch):
 
 @pytest.fixture
 def fake_server():
-    """A live fake LLMServer, and cleanup of the warm cache around the test."""
-    _clear_warm_cache()
-    yield _make_fake_server()
-    _clear_warm_cache()
+    """A live fake server handle (warm process pre-seeded)."""
+    return fake_handle()
 
 
 @pytest.fixture
 def make_fake_server():
-    _clear_warm_cache()
-    yield _make_fake_server
-    _clear_warm_cache()
+    """Factory for live fake server handles (kept for the long-standing name)."""
+    return fake_handle

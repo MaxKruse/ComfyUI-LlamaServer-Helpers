@@ -65,9 +65,12 @@ def test_find_free_port_returns_bindable_port():
 # --- LLMServer lifecycle ---------------------------------------------------
 
 
-def test_llmserver_is_alive_and_close(make_fake_server):
+def test_process_is_alive_and_close():
+    # Process-level lifecycle (the object wrapping the real OS process).
+    from conftest import fake_process
+
     proc = FakeProc()
-    s = make_fake_server(proc=proc)
+    s = fake_process(proc=proc)
     assert s.is_alive()
     assert not s.closed
     s.close()
@@ -137,15 +140,16 @@ def test_kill_process_tree_kills_wrapper_children(fake_tree_kill, monkeypatch):
     assert children.strip() == "", f"orphaned children survived: {children}"
 
 
-def test_llmserver_config_key_distinct():
-    a = server.LLMServer("u", "m", None, 1, "/a.gguf", 2048, server_path="s")
-    b = server.LLMServer("u", "m", None, 1, "/b.gguf", 2048, server_path="s")
-    c = server.LLMServer("u", "m", None, 1, "/a.gguf", 4096, server_path="s")
+def test_handle_config_key():
+    a = server.LLMServer("llama-server", "/a.gguf", 2048)
+    b = server.LLMServer("llama-server", "/b.gguf", 2048)
+    c = server.LLMServer("llama-server", "/a.gguf", 4096)
+    d = server.LLMServer("llama-server", "/a.gguf", 2048, mmproj_path="/m/mm.gguf")
     assert a.config_key != b.config_key
     assert a.config_key != c.config_key
+    assert a.config_key != d.config_key
     # same config -> same key
-    d = server.LLMServer("u", "m", None, 9, "/a.gguf", 2048, server_path="s")
-    assert a.config_key == d.config_key
+    assert a.config_key == server.LLMServer("llama-server", "/a.gguf", 2048).config_key
 
 
 # --- wait_for_server -------------------------------------------------------
@@ -279,11 +283,15 @@ def test_free_gpu_memory_still_clears_torch_cache_without_comfy(monkeypatch):
     assert calls == ["empty_cache", "ipc_collect"]
 
 
-# --- warm cache ------------------------------------------------------------
+# --- server handle (lazy lifecycle) ----------------------------------------
 
 
-def _patch_start(monkeypatch, make):
+def _patch_start(monkeypatch):
+    """Patch the process spawn behind the handle. Returns (started, freed)."""
+    from conftest import fake_process
+
     started = []
+    freed = []
 
     def fake_start(
         server_path,
@@ -294,133 +302,154 @@ def _patch_start(monkeypatch, make):
         extra_flags="",
         startup_timeout=120,
     ):
-        s = make(
+        p = fake_process(
             port=port,
             model_path=model_path,
             ctx_size=ctx_size,
             server_path=server_path,
+            mmproj_path=mmproj_path,
+            extra_flags=extra_flags,
             base_url=f"http://127.0.0.1:{port}",
         )
-        started.append(s)
-        return s
+        started.append(p)
+        return p
 
     monkeypatch.setattr(server, "start_server", fake_start)
     monkeypatch.setattr(server, "find_free_port", lambda: 12345)
-    monkeypatch.setattr(server, "free_gpu_memory", lambda: None)
-    return started
+    monkeypatch.setattr(server, "free_gpu_memory", lambda: freed.append(1))
+    return started, freed
 
 
-def test_warm_cache_reuses_same_config(monkeypatch, make_fake_server):
-    started = _patch_start(monkeypatch, make_fake_server)
-    a = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    b = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    assert a is b
+def test_handle_starts_nothing_on_construction():
+    # The whole point of the lazy handle: constructing one never touches the
+    # model - the process starts only on first real use.
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    assert not h.is_alive()
+    assert server._warm_servers == {}
+
+
+def test_ensure_live_cold_starts(monkeypatch):
+    started, freed = _patch_start(monkeypatch)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    h.ensure_live()
     assert len(started) == 1
-    server.close_all_servers()
+    assert freed == [1]  # the cold path frees GPU memory
+    assert h.is_alive()
+    assert h.base_url == "http://127.0.0.1:12345"
+    assert h.model_name == "fake-model"
+    assert server._warm_servers[h.config_key] is h._live
 
 
-def test_warm_cache_starts_new_when_dead(monkeypatch, make_fake_server):
-    started = _patch_start(monkeypatch, make_fake_server)
-    a = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    # simulate the process dying
-    a.proc._exit = 1
-    a._closed = False
-    b = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    assert b is not a
+def test_ensure_live_idempotent(monkeypatch):
+    started, _ = _patch_start(monkeypatch)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    h.ensure_live()
+    h.ensure_live()
+    assert len(started) == 1
+
+
+def test_base_url_property_lazy_starts(monkeypatch):
+    # Consumers read base_url / model_name directly: the first read must
+    # trigger the lazy start.
+    started, _ = _patch_start(monkeypatch)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    assert h.base_url == "http://127.0.0.1:12345"
+    assert len(started) == 1
+
+
+def test_handle_warm_reuse_across_handles(monkeypatch):
+    # Two handles with the same config (e.g. two Load nodes) share one
+    # process: the second never pays the cold-start cost.
+    started, freed = _patch_start(monkeypatch)
+    a = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    a.ensure_live()
+    b = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    b.ensure_live()
+    assert len(started) == 1
+    assert freed == [1]  # warm reuse never frees GPU memory
+    assert b._live is a._live
+
+
+def test_handle_distinct_configs(monkeypatch):
+    started, _ = _patch_start(monkeypatch)
+    a = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    b = server.LLMServer("llama-server", "/m/b.gguf", 2048)
+    a.ensure_live()
+    b.ensure_live()
     assert len(started) == 2
-    server.close_all_servers()
+    assert a._live is not b._live
 
 
-def test_warm_cache_distinct_configs(monkeypatch, make_fake_server):
-    started = _patch_start(monkeypatch, make_fake_server)
-    a = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    b = server.get_or_start_server("llama-server", "/m/b.gguf", 2048)
-    assert a is not b
+def test_close_server_then_ensure_live_restarts(monkeypatch):
+    # After a Close, the handle cold-starts again on its next use.
+    started, _ = _patch_start(monkeypatch)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    h.ensure_live()
+    first = h._live
+    server.close_server(h)
+    assert not h.is_alive()
+    assert server._warm_servers == {}
+    h.ensure_live()
     assert len(started) == 2
-    server.close_all_servers()
+    assert h.is_alive()
+    assert h._live is not first
 
 
-def test_close_server_removes_from_cache(monkeypatch, make_fake_server):
-    _patch_start(monkeypatch, make_fake_server)
-    a = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    assert a in server._warm_servers.values()
+def test_ensure_live_restarts_dead_process(monkeypatch):
+    # A process that dies mid-run is replaced on the next ensure_live: the
+    # handle's contract is "give me a live server for this config".
+    started, _ = _patch_start(monkeypatch)
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    h.ensure_live()
+    h._live.proc._exit = 1  # simulate a crash
+    h.ensure_live()
+    assert len(started) == 2
+    assert h.is_alive()
+
+
+def test_close_server_is_config_scoped(monkeypatch):
+    # Same-config handles share one process: closing one frees the server
+    # even if that handle's own reference is stale - and the other handle
+    # cold-starts again on next use.
+    started, _ = _patch_start(monkeypatch)
+    a = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    a.ensure_live()
+    b = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    b.ensure_live()  # shares a's process
     server.close_server(a)
-    assert a not in server._warm_servers.values()
-    assert a.closed
-    server.close_all_servers()
-
-
-def test_close_server_pops_duplicate_wrapper(make_fake_server):
-    # A second wrapper object around the same process must still drop the
-    # cache entry when closed (duplicate objects can flow through the graph).
-    proc = FakeProc()
-    original = make_fake_server(proc=proc)
-    server._warm_servers[original.config_key] = original
-    duplicate = make_fake_server(proc=proc)
-    assert duplicate is not original
-    server.close_server(duplicate)
-    assert original.config_key not in server._warm_servers
-    assert duplicate.closed and not original.closed
-
-
-def test_close_server_keeps_newer_server_for_same_config(make_fake_server):
-    # A stale object must not evict a newer server (different PID) that is
-    # currently cached for the same config.
-    stale = make_fake_server(proc=FakeProc(pid=1111))
-    fresh = make_fake_server(proc=FakeProc(pid=2222))
-    server._warm_servers[fresh.config_key] = fresh
-    server.close_server(stale)
-    assert fresh.config_key in server._warm_servers
-    assert not fresh.closed
+    assert started[0].closed
+    assert not b._live.is_alive()
+    b.ensure_live()
+    assert len(started) == 2
+    assert b.is_alive()
 
 
 def test_close_server_none_is_noop():
     server.close_server(None)  # must not raise
 
 
-def test_get_or_start_returns_none_on_failed_cold_start(monkeypatch):
+def test_close_all_servers_stops_everything(monkeypatch):
+    started, _ = _patch_start(monkeypatch)
+    a = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    b = server.LLMServer("llama-server", "/m/b.gguf", 2048)
+    a.ensure_live()
+    b.ensure_live()
+    server.close_all_servers()
+    assert all(p.closed for p in started)
+    assert server._warm_servers == {}
+
+
+def test_ensure_live_failed_start_raises(monkeypatch):
+    # A failed cold start is a hard infrastructure error (never a silent
+    # degrade): the handle stays dead and nothing is cached.
     monkeypatch.setattr(server, "start_server", lambda *a, **k: None)
     monkeypatch.setattr(server, "find_free_port", lambda: 12345)
     monkeypatch.setattr(server, "free_gpu_memory", lambda: None)
-    assert server.get_or_start_server("llama-server", "/m/a.gguf", 2048) is None
-    server.close_all_servers()
-
-
-# --- start generation (Load node cache fingerprint) ------------------------
-
-
-def test_generation_increments_on_cold_start(monkeypatch, make_fake_server):
-    started = _patch_start(monkeypatch, make_fake_server)
-    before = server.server_generation()
-    server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    assert len(started) == 1
-    assert server.server_generation() == before + 1
-    server.close_all_servers()
-
-
-def test_generation_unchanged_on_warm_reuse(monkeypatch, make_fake_server):
-    started = _patch_start(monkeypatch, make_fake_server)
-    server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    after_start = server.server_generation()
-    server.get_or_start_server("llama-server", "/m/a.gguf", 2048)  # warm reuse
-    assert len(started) == 1
-    assert server.server_generation() == after_start
-    server.close_all_servers()
-
-
-def test_generation_increments_on_restart_after_close(monkeypatch, make_fake_server):
-    # The regression the fingerprint guards: after a Close tears the server
-    # down, the next start must bump the generation so the Load node's cache
-    # misses and a fresh (live) server is emitted, not the stale closed one.
-    started = _patch_start(monkeypatch, make_fake_server)
-    a = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    server.close_server(a)
-    after_close = server.server_generation()
-    b = server.get_or_start_server("llama-server", "/m/a.gguf", 2048)
-    assert b is not a
-    assert len(started) == 2
-    assert server.server_generation() == after_close + 1
-    server.close_all_servers()
+    h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
+    with pytest.raises(server.LLMServerStartError):
+        h.ensure_live()
+    assert not h.is_alive()
+    assert server._warm_servers == {}
 
 
 # --- interrupt handling -----------------------------------------------------
@@ -452,22 +481,20 @@ def test_check_interrupt_noop_without_comfy(monkeypatch, make_fake_server):
     assert srv.is_alive()
 
 
-def test_get_or_start_server_interrupt_kills_warm_server(
-    monkeypatch, make_fake_server, interrupting_comfy
-):
+def test_ensure_live_interrupt_kills_warm_server(monkeypatch, interrupting_comfy):
+    # An interrupt during the warm-cache lookup must kill the warm server
+    # before the exception propagates, and never reach the cold start.
+    from conftest import fake_handle
+
     exc = interrupting_comfy
-    srv = make_fake_server()
-    server._warm_servers[srv.config_key] = srv
+    h = fake_handle()  # warm process pre-seeded in the cache
+    started = []
+    monkeypatch.setattr(server, "start_server", lambda *a, **k: started.append(1))
+    monkeypatch.setattr(server, "find_free_port", lambda: 12345)
     freed = []
     monkeypatch.setattr(server, "free_gpu_memory", lambda: freed.append(1))
     with pytest.raises(exc):
-        server.get_or_start_server(
-            srv.server_path,
-            srv.model_path,
-            srv.ctx_size,
-            srv.mmproj_path,
-            srv.extra_flags,
-        )
-    assert not srv.is_alive()
+        h.ensure_live()
+    assert not h.is_alive()
     assert server._warm_servers == {}
-    assert freed == []  # interrupt before the cold start, no GPU churn
+    assert started == [] and freed == []  # interrupt before the cold start
