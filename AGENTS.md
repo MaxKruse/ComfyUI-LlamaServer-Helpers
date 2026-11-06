@@ -9,7 +9,8 @@ lives.
 A ComfyUI custom node that starts a local llama.cpp `llama-server` and exposes
 a set of nodes that all share **one** connection to that model:
 
-- `LoadLLMServer` - start (or reuse a warm) server, emit the connection.
+- `LoadLLMServer` - emit a stable server handle (the model starts lazily on
+  first real use, never at Load time).
 - `CloseLLMServer` - stop the server, free VRAM.
 - `LLMPrompt` - generic system + user prompt -> response.
 - `PromptEnhancer` - enhance a prompt (+ optional negative prompt).
@@ -26,9 +27,10 @@ a set of nodes that all share **one** connection to that model:
   (same shape as `PromptEnhancer`, but with the model's documented prompt
   dialect baked into the system-prompt default).
 
-The core UX win over a cold-start-per-run design: the server is started once and
-kept **warm** for the ComfyUI session, so repeated queue items reuse it instead
-of re-loading the model each time.
+The core UX win over a cold-start-per-run design: the server is started on first
+real use and kept **warm** for the ComfyUI session, so repeated queue items -
+and re-runs with unchanged inputs - reuse it instead of re-loading the model
+each time.
 
 ## Layering
 
@@ -64,53 +66,72 @@ a new third-party dependency (the node is stdlib-only by design).
 | `presets/` | Six `.txt` dialect guides mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v). Keep them in sync with that package when its presets change. |
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
-| `server.py` | `LLMServer` dataclass; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the warm cache (`get_or_start_server`, `close_server`, `close_all_servers`, `server_generation`, `atexit`). |
-| `client.py` | HTTP chat client: `chat_completion`, `chat_completion_interruptible`, `build_user_content`, `_payload`, image-to-base64-JPEG, context-error detection, timing log. |
+|`server.py`|`LLMServerProcess` (a running server), the lazy `LLMServer` handle (`ensure_live`, lazy `base_url`/`model_name`/`port`), `LLMServerStartError`; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the config-scoped warm cache (`close_server`, `close_all_servers`, `atexit`).|
+|`client.py`|HTTP chat client: `chat_completion`, `chat_completion_interruptible` (both resolve the handle's process first, so a lazy cold start happens on first use), `build_user_content`, `_payload`, image-to-base64-JPEG, context-error detection, timing log.|
 | `enhance.py` | `enhance_prompt` + the quality gate (`is_good_prompt`: min words, refusal patterns, Jaccard echo) + lenient JSON parsing. |
 | `judge.py` | `check_rules` (text and/or images via the `images=` kwarg; vision path uses `_judge_image_system_prompt`) + `CheckResult` + verdict parsing. |
-| `tests/` | `conftest.py` (path setup + `FakeProc` + fake-server fixtures) and one test file per logic module + the node layer (`test_nodes.py` for the base nodes, `test_model_nodes.py` for the factory-built enhancers, `ImageRulesChecker`, and the preset data). |
+|`tests/`|`conftest.py` (path setup + `FakeProc` + `fake_process`/`fake_handle` builders + `fake_server`/`make_fake_server` fixtures + autouse `clean_warm_cache`/`fake_tree_kill`) and one test file per logic module + the node layer (`test_nodes.py` for the base nodes, `test_model_nodes.py` for the factory-built enhancers, `ImageRulesChecker`, and the preset data).|
 
-## The meta-object: `LLMServer`
+## The meta-object: `LLMServer` handle + `LLMServerProcess`
 
-A `dataclass` in `server.py` - the "meta-object" handed from `LoadLLMServer` to
-every consumer. Fields (in order): `base_url`, `model_name`, `proc`, `port`,
-`model_path`, `ctx_size`, `server_path=""`, `mmproj_path=""`, `extra_flags=""`,
-`started_at` (monotonic), and a private `_closed` (`compare=False`).
+Two classes in `server.py`:
 
-- `config_key` property = `(server_path, model_path, ctx_size, mmproj_path,
-  extra_flags)` - the identity of a "same configuration".
-- `is_alive()` = `not _closed and proc is not None and proc.poll() is None`.
-- `close()` is idempotent -> `kill_server(proc)`.
+- `LLMServerProcess` - a running server: the OS process plus how to talk to it.
+  Fields (in order): `base_url`, `model_name`, `proc`, `port`, `model_path`,
+  `ctx_size`, `server_path=""`, `mmproj_path=""`, `extra_flags=""`,
+  `started_at` (monotonic), and a private `_closed` (`compare=False`).
+  `config_key` property = `(server_path, model_path, ctx_size, mmproj_path,
+  extra_flags)`; `is_alive()` = `not _closed and proc is not None and
+  proc.poll() is None`; `close()` is idempotent -> `kill_server(proc)`.
+- `LLMServer` - the stable, cacheable **handle** the Load node emits and every
+  consumer threads. Plain class (not a dataclass). Fields: `server_path`,
+  `model_path`, `ctx_size`, `mmproj_path`, `extra_flags`, `startup_timeout`,
+  and a private `_live: LLMServerProcess | None`. Same `config_key` 5-tuple
+  (`startup_timeout` deliberately excluded). `is_alive()` delegates to `_live`.
+  `ensure_live()` is the only thing that starts a process (see lifecycle
+  below); `base_url` / `model_name` / `port` are lazy properties that call it;
+  `close()` is `close_server(self)`.
+- `LLMServerStartError(RuntimeError)` - a failed cold start. It propagates
+  through `ensure_live` -> `chat_completion` to the node: the first consumer
+  that needs the server goes red with the message - never a silent degrade or
+  `None`.
 
-## Warm-cache state & lifecycle
+## Warm-cache state & lifecycle (lazy)
 
-Module-level `_warm_servers: dict[tuple, LLMServer]` guarded by `_warm_lock`
-(lives for the ComfyUI session).
+Module-level `_warm_servers: dict[tuple, LLMServerProcess]` guarded by
+`_warm_lock` (lives for the ComfyUI session). Nothing starts at Load time:
+the handle is pure configuration, and the first `ensure_live()` pays the
+start cost.
 
-- `get_or_start_server(server_path, model_path, ctx_size, mmproj_path="",
-  extra_flags="", startup_timeout=120)`: if a live server with the same
-  `config_key` exists, reuse it (no VRAM churn). Otherwise `free_gpu_memory()`,
-  `find_free_port()`, `start_server(...)`; on failure return `None`. On a
-  successful cold start `_server_start_generation` is bumped (the `LoadLLMServer`
-  cache fingerprint - see Gotchas).
-- `close_server(server)`: pop the matching cache entry when the stored server
-  is this object **or a different wrapper around the same process** (`_same_process`:
-  same `proc.pid`), then `server.close()`. `close_server(None)` is a no-op.
+- `LLMServer.ensure_live()`: `check_interrupt(handle)` (an interrupt kills the
+  in-use server first, see below) -> warm lookup by `config_key` (alive ->
+  adopt it as `_live`, no VRAM churn, prints "Reusing warm ...") -> otherwise
+  the cold path: `free_gpu_memory()`, `find_free_port()`, `start_server(...)`;
+  register the process in the cache and set `_live`. A failed start raises
+  `LLMServerStartError` (nothing is cached).
+- `close_server(handle)`: pop `_warm_servers[handle.config_key]`, clear
+  `handle._live`, kill the popped process if it is alive.
+  `close_server(None)` is a no-op. **Config-scoped**: every handle for the
+  same config shares one process, so closing any one of them frees that
+  config's server - the process the config currently owns, never whatever a
+  stale handle's own reference points at. The other handles then cold-start
+  again on their next use.
+- A process that dies mid-run (crash) is replaced on the next
+  `ensure_live()`: the dead cache entry fails the alive check, the handle
+  cold-starts, and overwrites the entry.
 - `close_all_servers()` + `atexit.register(close_all_servers)` are the safety
   net so a server is never left running when the process exits.
 
 Invariants: a server is only ever started on a **cold** path (warm reuse never
-calls `free_gpu_memory`); `close_server` must match on process identity (same
-object, or a different wrapper with the same `proc.pid`), never just
-`config_key`, so a *newer* server for the same config is never torn down by
-mistake; and an interrupt during a node's run kills **only the in-use server
-of the interrupted node** (`check_interrupt(server)` at every call site in
-`client` / `enhance` / `judge`, plus the warm server for its own config in
-`get_or_start_server`) before the interrupt exception aborts the run - the
-Close node downstream of the interrupted node never runs, so this is the only
-teardown that happens. A half-started server from an interrupted cold start is
-handled separately: `start_server` kills the process on any exception,
-interrupt included.
+calls `free_gpu_memory`); `close_server` matches on the config key, so the
+unit of teardown is the configuration, not object identity; and an interrupt
+during a node's run kills **only the in-use server of the interrupted node**
+(`check_interrupt(handle)` at every call site in `client` / `enhance` /
+`judge`, including the top of `ensure_live`) before the interrupt exception
+aborts the run - the Close node downstream of the interrupted node never
+runs, so this is the only teardown that happens. A half-started server from an
+interrupted cold start is handled separately: `start_server` kills the
+process on any exception, interrupt included.
 
 ## The nodes: inputs, outputs, failure semantics
 
@@ -120,15 +141,20 @@ All use V3 `comfy_api.latest.io` schemas. Every LLM consumer takes
 the connection is what orders Close *after* the consumers; Close (and the image
 gate) are additionally declared output nodes so the executor actually schedules
 them - ComfyUI only runs output nodes and their upstream dependencies, and a
-connection-only sink with no outputs would otherwise never run. `LoadLLMServer`
-returns the start-generation as its `fingerprint_inputs` so its output cache
-never hands out a stale (closed) connection.
+connection-only sink with no outputs would otherwise never run.
+`LoadLLMServer` overrides no fingerprint at all: its output is cacheable
+purely by its inputs (the model configuration is the cache key), and the
+handle's `ensure_live()` guarantees a cached (post-Close) handle still
+resolves a live process on next use.
 
 - **LoadLLMServer** - in: `model_path` (required, absolute, existing),
   `llama_server_path` (default `llama-server`; bare name on PATH or absolute),
   `ctx_size` (default 20480), `mmproj_path` (optional), `extra_server_args`
-  (optional), `startup_timeout` (optional, default 120). out: `llm_server`.
-  Raises `ValueError` on a bad path, `RuntimeError` if the server fails to start.
+  (optional), `startup_timeout` (optional, default 120). out: `llm_server`
+  (the handle). Validates the paths (raises `ValueError` on a bad path) and
+  builds the handle - it **starts nothing and raises no start error**: the
+  process is a side effect of first use, and a failed start surfaces at the
+  first consumer that needs the server as `LLMServerStartError` (red node).
 - **CloseLLMServer** - in: `llm_server`, `judgement` (optional string). out:
   none. An output node
   (`is_output_node=True`) with a NaN cache fingerprint (`fingerprint_inputs`
@@ -197,12 +223,14 @@ never hands out a stale (closed) connection.
   `check_rules(server, "", rules, ..., images=...)`.
 
 - **Interruption kills the in-use server.** Every LLM node passes its current
-  `LLMServer` to `check_interrupt(server)` at each interrupt check (while a
-  generation runs, between retry attempts, and before a cold start in
-  `get_or_start_server`). On a user interrupt the server is killed and its
-  VRAM freed **before** the interrupt exception aborts the run - the Close node
-  downstream of the interrupted node never runs, so this is the only teardown
-  that happens. Warm servers of *other* configurations are untouched.
+  `LLMServer` handle to `check_interrupt(handle)` at each interrupt check (while
+  a generation runs, between retry attempts, and at the top of
+  `ensure_live`), and `start_server` cleans up a half-started process itself
+  when its health poll is interrupted. On a user interrupt the in-use server is
+  killed and its VRAM freed **before** the interrupt exception aborts the run -
+  the Close node downstream of the interrupted node never runs, so this is the
+  only teardown that happens. Warm servers of *other* configurations are
+  untouched.
 
 The Enhancer/Rules quality-gate and verdict logic lives in `enhance.py` /
 `judge.py`, not in the nodes - the node just maps inputs and maps the result to
@@ -241,16 +269,20 @@ outputs.
   `float("NaN")`: closing / gating are side effects and must re-run every time -
   the default `RAM_PRESSURE` output cache is persistent across queue items, so a
   cached no-op would silently skip the side effect. Do not "simplify" them away.
-- **`LoadLLMServer.fingerprint_inputs` returns the start-generation, not NaN.**
-  `server.get_or_start_server` bumps `_server_start_generation` on every cold
-  start and `LoadLLMServer.fingerprint_inputs` returns it, so Load's output-cache
-  key changes exactly when a server (re)starts -> a cache miss -> a fresh live
-  `LLMServer` is emitted (a cached closed one would otherwise be handed out on
-  run 2). Do NOT make it return `float("NaN")`: a NaN in a node's signature
-  propagates into every transitive descendant's signature (including the
-  expensive sampler), making the whole downstream tree permanently non-cacheable.
-  The generation is global (not per-config) on purpose; a bump may re-run a
-  sibling Load node, but that is a cheap warm-cache lookup.
+  Teardown itself is **config-scoped** (`close_server` pops the warm-cache entry
+  for the handle's `config_key`): all handles of one configuration share the one
+  process that config currently owns.
+- **`LoadLLMServer` must NOT override `fingerprint_inputs`.** Its configuration
+  IS its cache key: with no override, Load is cached purely by its inputs, and a
+  re-run with unchanged inputs is a cache hit that hands out the (stable) handle
+  without re-running the LLM chain. An override - any value that changes over
+  time, and especially `float("NaN")`, which propagates into every transitive
+  descendant's signature (including the expensive sampler) - forces Load to
+  re-run and, via ancestor signatures, the whole downstream tree to re-run on
+  every prompt. That is exactly the bug the lazy handle replaces (the old
+  start-generation fingerprint). The handle stays safe once cached: after a
+  Close, its `ensure_live()` cold-starts a fresh process on next use, so a
+  stale (closed) connection is never handed to a consumer.
 - **Hyphenated package name + relative imports.** The dir is
   `ComfyUI-LlamaServer-Helpers` (not a valid identifier). ComfyUI loads it via
   `app/governance.py:pack_module_spec` -> `spec_from_file_location(.../
@@ -295,16 +327,26 @@ uv run --no-sync --with pytest pytest custom_nodes/ComfyUI-LlamaServer-Helpers/t
 Mocking conventions:
 - Node logic is mocked by `monkeypatch.setattr(nodes, "<fn>", ...)` where `<fn>`
   is one of `chat_completion_interruptible`, `enhance_prompt`, `check_rules`,
-  `close_server`, `get_or_start_server`. The `model_nodes` module is mocked the
-  same way (its `enhance_prompt` / `check_rules` are its own module-level
-  names, so patch on `model_nodes`, not on `nodes`); the per-model enhancer
-  classes are pulled from `model_nodes.MODEL_ENHANCER_NODES[node_id]`.
+  `close_server`. The `LoadLLMServer` tests patch `server.start_server` as a
+  spy and assert the handle was built without any start. The `model_nodes`
+  module is mocked the same way (its `enhance_prompt` / `check_rules` are its
+  own module-level names, so patch on `model_nodes`, not on `nodes`); the
+  per-model enhancer classes are pulled from
+  `model_nodes.MODEL_ENHANCER_NODES[node_id]`.
 - HTTP is mocked by `monkeypatch.setattr(<mod>.request, "urlopen", ...)`
   returning a tiny context-manager (`.status`, `.read()`).
-- The warm cache is tested by `monkeypatch.setattr(server, "start_server" /
-  "find_free_port" / "free_gpu_memory", fake)` returning a fake `LLMServer`
-  backed by `conftest.FakeProc`. `fake_server` / `make_fake_server` fixtures
-  clear `_warm_servers` around each test.
+- Fakes live in `conftest.py` as module functions: `fake_process(...)` builds
+  an `LLMServerProcess` backed by `FakeProc`, and `fake_handle(...)` builds an
+  `LLMServer` handle whose `_live` process is pre-seeded into
+  `server._warm_servers` (a "warm server" for tests). The `fake_server` /
+  `make_fake_server` fixtures wrap `fake_handle`. An **autouse**
+  `clean_warm_cache` fixture clears `_warm_servers` before and after every
+  test.
+- The lazy cold start is tested with the `_patch_start` pattern:
+  `monkeypatch.setattr(server, "start_server" / "find_free_port" /
+  "free_gpu_memory", fake)` where the fake start returns
+  `conftest.fake_process(...)`; the fakes record starts/frees in lists the
+  test asserts on.
 - An **autouse** `fake_tree_kill` fixture (conftest) replaces
   `server._kill_process_tree` in every test - `FakeProc` PIDs are arbitrary
   and could collide with live host processes, so the real `taskkill` must

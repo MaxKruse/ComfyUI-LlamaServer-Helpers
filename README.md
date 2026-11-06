@@ -2,12 +2,12 @@
 
 Run a local [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` from inside ComfyUI and put it to work on your prompts - no separate terminal, and no cold start on every queue item.
 
-The nodes share **one** server connection per model: start it once with **Load LLM Server**, chain any number of LLM nodes on it, then stop it with **Close LLM Server** to release VRAM before sampling.
+The nodes share **one** server per model: **Load LLM Server** hands out a server handle, chain any number of LLM nodes on it, then stop it with **Close LLM Server** to release VRAM before sampling. The model is loaded only when a node first actually needs it.
 
 ## What it does
 
-- Starts and manages a `llama-server` process for you (model, context size, and any extra flags).
-- Reuses a **warm** server across queue items, so only the first run pays the model-load cost.
+- Starts and manages a `llama-server` process for you (model, context size, and any extra flags) - the model loads when a node first uses the server, not when the workflow loads.
+- Reuses a **warm** server across queue items, so only the first run pays the model-load cost. Re-runs with unchanged inputs (same seed, same prompts) are served from cache: no reload, no re-enhance.
 - Gives you ready-made nodes for common LLM tasks plus a generic one:
   - enhancing a generation prompt (with an optional negative prompt),
   - checking free-form text against free-form rules,
@@ -25,7 +25,7 @@ The nodes share **one** server connection per model: start it once with **Load L
 
 | Node | What it does |
 |---|---|
-| **Load LLM Server** | Starts (or reuses a warm) `llama-server` for a model + context size + flags, and emits the `llm_server` connection. |
+| **Load LLM Server** | Emits a `llm_server` handle for a model + context size + flags. The `llama-server` process starts when a node first needs it, stays warm (shared across identical Load nodes) until a Close node stops it, and reloads again if it is closed and used once more. |
 | **Close LLM Server** | Stops the server and frees its VRAM. Put it after the last LLM node. Optionally takes a checker's `judgement`: the server is closed first, and the workflow aborts if the check failed. |
 | **LLM Prompt** | Generic building block: send a system + a user prompt, get the response back. |
 | **Prompt Enhancer (LLM Server)** | Rewrites and expands a generation prompt, optionally producing a negative prompt too. |
@@ -56,7 +56,7 @@ If you **interrupt** a run while any of the LLM nodes is using the model, the se
 
 ## Troubleshooting
 
-- **"Failed to start llama-server" / a red Load node** - open the ComfyUI console: the server's own output is captured and logged there. The usual causes are a wrong model path, a missing or incompatible `llama-server` binary, or a context size the model can't fit (lower `ctx_size`).
+- **"Failed to start llama-server" / a red LLM node** - the server starts when a node first uses it, so a start failure shows up on that first LLM node (not on Load). Open the ComfyUI console: the server's own output is captured and logged there. The usual causes are a wrong model path, a missing or incompatible `llama-server` binary, or a context size the model can't fit (lower `ctx_size`).
 - **"model_path must be an absolute path"** - use a full path such as `C:/models/your-model.gguf`, not a relative one.
-- **Slow first run** - expected; the first queue item loads the model and later items reuse the warm server.
+- **Slow first use** - expected; the first node that needs the model pays the model-load, and later nodes and later runs reuse the warm server.
 - **Still stuck?** Get help on the ComfyUI GitHub issues or subreddit with your model name, context size, and the console log.
