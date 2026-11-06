@@ -1,9 +1,10 @@
-"""llama-server lifecycle and the shared connection object.
+"""llama-server lifecycle and the shared server handle.
 
-Starts a single ``llama-server`` (llama.cpp) process on demand, keeps it warm
-across prompt executions, and hands out an :class:`LLMServer` connection object
-that the consumer nodes (enhancer, rules checker, generic prompt) use to talk
-to the model. A Close node - or ComfyUI shutdown - tears the process down.
+The Load node emits an :class:`LLMServer` handle - a stable, cacheable object
+carrying the full server configuration but no process. The actual
+``llama-server`` (llama.cpp) process starts lazily on first real use, is kept
+warm in a session-wide cache (keyed by configuration), and is torn down by a
+Close node or ComfyUI shutdown.
 
 This module is deliberately free of any ComfyUI import at module scope so it
 can be imported and unit-tested without the ComfyUI runtime present. The only
@@ -85,9 +86,8 @@ def build_command(
 ) -> list[str]:
     """Build the full llama-server command line.
 
-    ``extra_flags`` is split with ``shlex`` so quoted arguments (e.g. paths with
-    spaces) survive. User flags are appended last so they can override the
-    defaults above when the user wants to.
+    ``extra_flags`` is split with ``shlex`` (quoted arguments survive); user
+    flags are appended last so they can override the defaults above.
     """
     import shlex
 
@@ -163,12 +163,11 @@ def free_gpu_memory():
 
 
 @dataclass
-class LLMServer:
-    """Connection to a running llama-server.
+class LLMServerProcess:
+    """A running llama-server: the OS process plus how to talk to it.
 
-    This is the "meta-object" handed from the Load node to every consumer node.
-    It carries everything needed to talk to the model (``base_url`` +
-    ``model_name``) plus the handle used to tear the process down later.
+    Internal object - nodes and tests should deal with the :class:`LLMServer`
+    handle, which resolves (and caches) one of these per configuration.
     """
 
     base_url: str
@@ -208,6 +207,121 @@ class LLMServer:
             return
         self._closed = True
         kill_server(self.proc)
+
+
+class LLMServerStartError(RuntimeError):
+    """A cold start of the llama-server failed (see the ComfyUI logs)."""
+
+
+class LLMServer:
+    """Stable, cacheable handle to a llama-server for one fixed configuration.
+
+    The "meta-object" the Load node emits and every consumer node threads
+    through: it carries the full server configuration (which is what makes the
+    Load node cacheable by inputs) but no process. The llama-server starts
+    lazily on first real use (:meth:`ensure_live`, or the first ``base_url`` /
+    ``model_name`` read), is reused warm while alive, and is resolved again
+    after a Close.
+    """
+
+    def __init__(
+        self,
+        server_path: str,
+        model_path: str,
+        ctx_size: int,
+        mmproj_path: str = "",
+        extra_flags: str = "",
+        startup_timeout: int = _SERVER_STARTUP_TIMEOUT,
+    ):
+        self.server_path = server_path
+        self.model_path = model_path
+        self.ctx_size = ctx_size
+        self.mmproj_path = mmproj_path
+        self.extra_flags = extra_flags
+        self.startup_timeout = startup_timeout
+        self._live: LLMServerProcess | None = None
+
+    @property
+    def config_key(self) -> tuple:
+        """Warm-cache identity: the exact server configuration.
+
+        ``startup_timeout`` is not part of the key: two Load nodes with the
+        same model but different timeouts share one server.
+        """
+        return (
+            self.server_path,
+            self.model_path,
+            self.ctx_size,
+            self.mmproj_path,
+            self.extra_flags,
+        )
+
+    def is_alive(self) -> bool:
+        """True while the process behind this handle is running and not closed."""
+        return self._live is not None and self._live.is_alive()
+
+    def ensure_live(self) -> None:
+        """Resolve a live process for this config, starting one if needed.
+
+        Warm reuse never frees GPU memory; a cold start does. Raises the
+        ComfyUI interrupt exception (killing the in-use server first) when an
+        interrupt is requested, and :class:`LLMServerStartError` when a cold
+        start fails.
+        """
+        check_interrupt(self)
+        with _warm_lock:
+            existing = _warm_servers.get(self.config_key)
+        if existing is not None and existing.is_alive():
+            if self._live is not existing:
+                _print_safe(
+                    f"  [{_LOG_TAG}] Reusing warm llama-server "
+                    f"(port {existing.port}, model {existing.model_name})"
+                )
+            self._live = existing
+            return
+
+        free_gpu_memory()
+        port = find_free_port()
+        process = start_server(
+            self.server_path,
+            self.model_path,
+            port,
+            self.ctx_size,
+            self.mmproj_path,
+            self.extra_flags,
+            self.startup_timeout,
+        )
+        if process is None:
+            raise LLMServerStartError(
+                "Failed to start llama-server. Check the model path, that the "
+                "llama-server binary is correct, and the ComfyUI logs for the "
+                "captured server output. Lower ctx_size if the model cannot fit."
+            )
+        with _warm_lock:
+            _warm_servers[self.config_key] = process
+        self._live = process
+
+    def _resolve(self):
+        """Return the live process, cold-starting it when needed."""
+        if not self.is_alive():
+            self.ensure_live()
+        return self._live
+
+    @property
+    def base_url(self) -> str:
+        return self._resolve().base_url
+
+    @property
+    def model_name(self) -> str:
+        return self._resolve().model_name
+
+    @property
+    def port(self) -> int:
+        return self._resolve().port
+
+    def close(self):
+        """Stop this config's server. Idempotent."""
+        close_server(self)
 
 
 def wait_for_server(
@@ -338,8 +452,8 @@ def start_server(
     mmproj_path: str = "",
     extra_flags: str = "",
     startup_timeout: int = _SERVER_STARTUP_TIMEOUT,
-) -> LLMServer | None:
-    """Start llama-server, wait until healthy, and return a live LLMServer.
+) -> LLMServerProcess | None:
+    """Start llama-server, wait until healthy, and return a live process object.
 
     Returns None when the server could not be started (binary missing, process
     exited early, or not healthy in time). Captures server output so early
@@ -406,7 +520,7 @@ def start_server(
 
     model_name = discover_model_name(base_url)
     _print_safe(f"  [{_LOG_TAG}] Server ready. Model: {model_name}")
-    return LLMServer(
+    return LLMServerProcess(
         base_url=base_url,
         model_name=model_name,
         proc=proc,
@@ -420,97 +534,28 @@ def start_server(
 
 
 # --- Warm cache -----------------------------------------------------------
-# The whole point of the loader/consumer split: a server started by the Load
-# node is reused for the rest of the ComfyUI session (or until a Close node
-# tears it down), so repeated queue items do not pay the cold-start cost.
-_warm_servers: dict[tuple, LLMServer] = {}
+# A server started for one configuration is reused for the rest of the
+# ComfyUI session (or until a Close node tears it down), so repeated queue
+# items do not pay the cold-start cost.
+_warm_servers: dict[tuple, LLMServerProcess] = {}
 _warm_lock = Lock()
 
-# "Start generation": bumps every time a llama-server is cold-started. The Load
-# node returns this as its cache fingerprint (``fingerprint_inputs``) so
-# ComfyUI's output cache never hands out a stale (closed) LLMServer: the
-# fingerprint changes exactly when a server is (re)started, forcing a cache
-# miss and a fresh, live server. It is global (not per-config) on purpose: a
-# bump may make a sibling Load node re-run, but re-running is a cheap warm-cache
-# lookup, and the invariant that matters is that a Load node never returns a
-# dead server.
-_server_start_generation = 0
 
+def close_server(server: "LLMServer | None") -> None:
+    """Stop the server for this handle's configuration. Idempotent.
 
-def server_generation() -> int:
-    """Current start generation, used as the Load node's cache fingerprint."""
-    return _server_start_generation
-
-
-def get_or_start_server(
-    server_path: str,
-    model_path: str,
-    ctx_size: int,
-    mmproj_path: str = "",
-    extra_flags: str = "",
-    startup_timeout: int = _SERVER_STARTUP_TIMEOUT,
-) -> LLMServer | None:
-    """Return a live server for this config, reusing a warm one when possible.
-
-    ``server_path`` and ``model_path`` must already be resolved and validated
-    by the caller (the node layer does that). Returns a live :class:`LLMServer`
-    or None when a cold start fails. Frees ComfyUI GPU memory only on a cold
-    start, never when reusing a warm server.
-    """
-    global _server_start_generation
-    key = (server_path, model_path, ctx_size, mmproj_path, extra_flags)
-    with _warm_lock:
-        existing = _warm_servers.get(key)
-    if existing is not None and not existing.is_alive():
-        existing = None
-    check_interrupt(existing)
-    if existing is not None:
-        _print_safe(
-            f"  [{_LOG_TAG}] Reusing warm llama-server (port {existing.port}, model {existing.model_name})"
-        )
-        return existing
-
-    free_gpu_memory()
-    port = find_free_port()
-    server = start_server(
-        server_path,
-        model_path,
-        port,
-        ctx_size,
-        mmproj_path,
-        extra_flags,
-        startup_timeout,
-    )
-    if server is None:
-        return None
-    with _warm_lock:
-        _warm_servers[key] = server
-        _server_start_generation += 1
-    return server
-
-
-def _same_process(a: LLMServer, b: LLMServer) -> bool:
-    """True when two connections wrap the very same operating-system process."""
-    return a is b or (
-        a.proc is not None and b.proc is not None and a.proc.pid == b.proc.pid
-    )
-
-
-def close_server(server: LLMServer | None) -> None:
-    """Stop one server and drop it from the warm cache. Idempotent.
-
-    The cache entry is dropped when the stored server is this object, or a
-    different wrapper around the same process (duplicate objects can flow
-    through the graph). A different PID - a newer server for the same config -
-    is never torn down by mistake.
+    Closing is config-scoped: every handle for the same configuration shares
+    one process, so closing any one of them frees that config's server - the
+    process currently owned by the config, not whatever a stale handle's own
+    reference points at. ``None`` is a no-op.
     """
     if server is None:
         return
     with _warm_lock:
-        current = _warm_servers.get(server.config_key)
-        if current is not None and _same_process(current, server):
-            _warm_servers.pop(server.config_key, None)
-    server.close()
+        process = _warm_servers.pop(server.config_key, None)
+    server._live = None
+    if process is not None and process.is_alive():
+        process.close()
 
 
 def close_all_servers():

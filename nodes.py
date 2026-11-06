@@ -30,7 +30,7 @@ try:
         require_model_path,
         resolve_server_path,
     )
-    from .server import close_server, get_or_start_server, server_generation
+    from .server import LLMServer, close_server
 except ImportError:
     from client import chat_completion_interruptible
     from enhance import enhance_prompt
@@ -42,15 +42,19 @@ except ImportError:
         require_model_path,
         resolve_server_path,
     )
-    from server import close_server, get_or_start_server, server_generation
+    from server import LLMServer, close_server
 
 
 class LoadLLMServer(io.ComfyNode):
-    """Start a llama-server for a model and hand out the connection.
+    """Hand out a handle for a llama-server model configuration.
 
-    Reuses a warm server with the same configuration when one is already
-    running for this session, so repeated queue items do not pay the cold-start
-    cost. Connect the emitted ``llm_server`` to any LLM consumer node.
+    The emitted handle is stable and cheap: it carries the full server
+    configuration but no process. The llama-server starts lazily on first real
+    use by a consumer node, is then kept warm for the session (a second Load
+    with the same configuration shares the same process), and is torn down by
+    a Close node. Because the handle depends only on the inputs, repeated runs
+    with unchanged inputs are served from ComfyUI's output cache without
+    touching the model process.
     """
 
     @classmethod
@@ -59,7 +63,7 @@ class LoadLLMServer(io.ComfyNode):
             node_id="LoadLLMServer",
             display_name="Load LLM Server",
             category="LlamaServer",
-            description="Start (or reuse a warm) llama-server and emit the connection to use with the LLM helper nodes.",
+            description="Emit a llama-server handle for a model configuration. The server process starts on first use and stays warm until a Close node stops it.",
             inputs=[
                 io.String.Input(
                     "model_path",
@@ -126,7 +130,10 @@ class LoadLLMServer(io.ComfyNode):
         startup_timeout = int(inputs.get("startup_timeout") or 120)
         ctx_size = int(inputs["ctx_size"])
 
-        server = get_or_start_server(
+        # No process is started here: the server is a side effect of first use,
+        # and this node's output is cacheable purely by its inputs (the model
+        # configuration), which is what keeps same-input re-runs fully cached.
+        handle = LLMServer(
             server_path,
             model_path,
             ctx_size,
@@ -134,21 +141,7 @@ class LoadLLMServer(io.ComfyNode):
             extra_flags=extra_flags,
             startup_timeout=startup_timeout,
         )
-        if server is None:
-            raise RuntimeError(
-                "Failed to start llama-server. Check the model path, that the "
-                "llama-server binary is correct, and the ComfyUI logs for the captured "
-                "server output. Lower ctx_size if the model cannot fit."
-            )
-        return io.NodeOutput(server)
-
-    @classmethod
-    def fingerprint_inputs(cls, **inputs):
-        # Cache key tied to the server start generation: when a llama-server is
-        # (re)started this changes, so ComfyUI's output cache misses and Load
-        # re-runs - guaranteeing a fresh, live server is emitted, never a stale
-        # (closed) one cached from an earlier prompt.
-        return server_generation()
+        return io.NodeOutput(handle)
 
 
 class CloseLLMServer(io.ComfyNode):

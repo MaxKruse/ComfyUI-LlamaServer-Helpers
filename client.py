@@ -146,7 +146,12 @@ def chat_completion(
     *images* is an optional list of ComfyUI IMAGE tensors; each is JPEG-encoded
     and sent alongside the text so a multimodal model can see it. Sampling
     params (``temperature``, ``max_tokens``) are sent only when not None.
+
+    The server is resolved first (lazy cold start): if the process is not
+    running yet, this is where it starts - and where a failed start raises
+    :class:`~server.LLMServerStartError` instead of returning a silent None.
     """
+    server.ensure_live()
     content = build_user_content(user_prompt, images)
     payload = _payload(
         server,
@@ -211,6 +216,12 @@ def chat_completion_interruptible(
     """Run :func:`chat_completion` in a worker thread so a long generation can be
     interrupted by the user (ComfyUI interrupt) instead of blocking the queue.
     """
+    # Resolve the server in the queue thread (not the worker): an interrupt
+    # during a lazy cold start must abort the run here, where start_server's
+    # cleanup can kill the half-started process; in the worker it would just
+    # strand a zombie start. With this done, the worker's own ensure_live is
+    # a cheap warm-cache hit.
+    server.ensure_live()
     box: dict = {}
 
     def worker():
