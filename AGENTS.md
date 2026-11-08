@@ -46,9 +46,9 @@ Two layers, split deliberately:
   path.
 - **Pure-data module** (`presets.py`): the `EnhancerSpec` NamedTuple plus
   `ENHANCER_SPECS`, the per-model dialect system prompts and quality-gate
-  defaults for the per-model enhancers. Imports only `pathlib`: the six
-  mirrored dialect guides are loaded from the `presets/` directory at import
-  time. Keep it stdlib-only.
+  defaults for the per-model enhancers. Imports only `pathlib`: all twelve
+  dialect guides live in the `presets/` directory (the single source of truth
+  for dialect text) and are loaded at import time. Keep it stdlib-only.
 - **Comfy-dependent modules** (`node_base.py`, `nodes.py`, `model_nodes.py`)
   import `comfy_api.latest.io` at module scope and are only importable inside
   the ComfyUI runtime (or with it on the path in tests).
@@ -62,8 +62,8 @@ a new third-party dependency (the node is stdlib-only by design).
 |---|---|
 | `__init__.py` | Merges the mappings from `.nodes` and `.model_nodes` into `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` inside a `try/except` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
 | `nodes.py` | The five base `io.ComfyNode` classes (Load/Close/LLMPrompt/PromptEnhancer/RulesChecker), the base mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
-| `presets.py` | Data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, min-words and negative-prompt defaults). Compact dialects are inline constants; six full dialect guides are loaded from `presets/` at import time (`_load_preset`). |
-| `presets/` | Six `.txt` dialect guides mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v). Keep them in sync with that package when its presets change. |
+|`presets.py`|Data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, preset file, min-words and negative-prompt defaults). All dialect text is loaded from `presets/` at import time (`_load_preset`); each spec names its file in `preset_file` so the tests can pin the file as the source of truth.|
+|`presets/`|The single source of truth for all enhancer dialects: twelve `.txt` files, one per model spec. Seven are mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (krea2-t2i, moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v) - keep those in sync with that package when its presets change. Five are local compact dialects (flux-t2i, zimage-t2i, qwenimage-t2i, minimax-h3-t2v, wan2.2-t2v).|
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
 |`server.py`|`LLMServerProcess` (a running server), the lazy `LLMServer` handle (`ensure_live`, lazy `base_url`/`model_name`/`port`), `LLMServerStartError`; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the config-scoped warm cache (`close_server`, `close_all_servers`, `atexit`).|
@@ -186,13 +186,14 @@ resolves a live process on next use.
   `LlamaServer/Video`) -
   built by `_build_enhancer_node(spec)` in `model_nodes.py` from
   `presets.ENHANCER_SPECS` (one spec per model: node_id, display_name,
-  description, dialect system prompt, category, `default_min_words`,
-  `default_generate_negative`). Same inputs/outputs as `PromptEnhancer`, but
-  `system_prompt` defaults to the model's dialect (still user-editable), and
-  `min_words` / `generate_negative_prompt` default from the spec (Z-Image: 40;
-  MOSS-Image: 40; LTX 2.3: 60; LTX 2.5: 40; MiniMax H3 / R2V / Eros Max: 50;
-  no per-model enhancer defaults `generate_negative_prompt` on - only the
-  generic `PromptEnhancer` does). The six mirrored models' dialects (Qwen-Image 2.1 Edit, MOSS-Image,
+  description, dialect system prompt, category, `preset_file`,
+  `default_min_words`, `default_generate_negative`). Same inputs/outputs as
+  `PromptEnhancer`, but `system_prompt` defaults to the model's dialect (still
+  user-editable), and `min_words` / `generate_negative_prompt` default from the
+  spec (Krea 2: 100; Z-Image: 40; MOSS-Image: 40; LTX 2.3: 60; LTX 2.5: 40;
+  MiniMax H3 / R2V / Eros Max: 50; no per-model enhancer defaults
+  `generate_negative_prompt` on - only the generic `PromptEnhancer` does). The
+  seven mirrored models' dialects (Krea 2, Qwen-Image 2.1 Edit, MOSS-Image,
   both LTX, both MiniMax R2V variants) are the full dialect guides mirrored
   verbatim from `../ComfyUI-PromptEnhancer`, loaded from `presets/*.txt` at
   import time - keep the files in sync with that package. Same **degrade**
