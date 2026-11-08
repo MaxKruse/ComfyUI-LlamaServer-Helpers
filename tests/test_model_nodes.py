@@ -45,6 +45,7 @@ def test_specs_unique_ids_and_complete_fields():
         assert s.node_id
         assert s.display_name
         assert s.description
+        assert s.preset_file
         assert len(s.system_prompt) >= 100  # a real dialect prompt, not a stub
         assert 1 <= s.default_min_words <= 500
 
@@ -78,6 +79,16 @@ def test_mirrored_preset_systems_match_preset_files():
         text = (PRESETS_DIR / filename).read_text(encoding="utf-8").strip()
         assert spec.system_prompt == text, (
             f"{node_id} system prompt differs from {filename}"
+        )
+
+
+def test_all_spec_systems_match_preset_files():
+    # presets/ is the single source of truth: every spec's system prompt must
+    # be exactly the contents of the file named in its preset_file field.
+    for s in ENHANCER_SPECS:
+        text = (PRESETS_DIR / s.preset_file).read_text(encoding="utf-8").strip()
+        assert s.system_prompt == text, (
+            f"{s.node_id} system prompt differs from {s.preset_file}"
         )
 
 
