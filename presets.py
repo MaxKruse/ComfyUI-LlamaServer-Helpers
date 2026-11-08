@@ -71,10 +71,13 @@ ENHANCER_SPECS: list[EnhancerSpec] = [
     EnhancerSpec(
         node_id="Krea2PromptEnhancer",
         display_name="Krea 2 Prompt Enhancer (LLM Server)",
-        description="Enhance a prompt for Krea 2: one detailed natural-language paragraph, one medium and one style.",
+        description="Enhance a prompt for Krea 2: one 200-300 word natural-language paragraph, subject and action first, medium last, exclusions steered with positives.",
         system_prompt=KREA2_SYSTEM,
         category="LlamaServer/LLM",
         preset_file="krea2-t2i.txt",
+        # The dialect targets 200-300 words; the floor rejects lazy short
+        # expansions without failing decent-length ones.
+        default_min_words=100,
     ),
     EnhancerSpec(
         node_id="ZImagePromptEnhancer",

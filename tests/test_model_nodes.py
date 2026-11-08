@@ -16,8 +16,9 @@ from presets import ENHANCER_SPECS
 PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
 
 # Model dialects mirrored verbatim from ../ComfyUI-PromptEnhancer: node_id ->
-# preset filename. These six were missing from the first mirror pass.
+# preset filename.
 MIRRORED_PRESETS = {
+    "Krea2PromptEnhancer": "krea2-t2i.txt",
     "MossImagePromptEnhancer": "moss-image-sft-t2i.txt",
     "QwenImageEditPromptEnhancer": "qwenimage2.1-i2i.txt",
     "Ltx23PromptEnhancer": "ltx2.3-10eros-i2v.txt",
@@ -94,6 +95,7 @@ def test_all_spec_systems_match_preset_files():
 
 def test_mirrored_preset_categories_and_defaults():
     expected = {
+        "Krea2PromptEnhancer": ("LlamaServer/LLM", 100),
         "MossImagePromptEnhancer": ("LlamaServer/LLM", 40),
         "QwenImageEditPromptEnhancer": ("LlamaServer/LLM", 25),
         "Ltx23PromptEnhancer": ("LlamaServer/Video", 60),
