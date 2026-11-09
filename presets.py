@@ -51,8 +51,10 @@ QWEN_SYSTEM = _load_preset("qwenimage-t2i.txt")
 MINIMAX_H3_SYSTEM = _load_preset("minimax-h3-t2v.txt")
 WAN22_SYSTEM = _load_preset("wan2.2-t2v.txt")
 
-# Mirrored verbatim from ../ComfyUI-PromptEnhancer/presets/.
+# Locally maintained (no longer a verbatim mirror of the source package).
 MOSS_IMAGE_SYSTEM = _load_preset("moss-image-sft-t2i.txt")
+
+# Mirrored verbatim from ../ComfyUI-PromptEnhancer/presets/.
 QWEN_IMAGE_EDIT_SYSTEM = _load_preset("qwenimage2.1-i2i.txt")
 LTX23_SYSTEM = _load_preset("ltx2.3-10eros-i2v.txt")
 LTX25_SYSTEM = _load_preset("ltx2.5-i2v.txt")

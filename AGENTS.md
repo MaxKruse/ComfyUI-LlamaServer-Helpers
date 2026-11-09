@@ -63,7 +63,7 @@ a new third-party dependency (the node is stdlib-only by design).
 | `__init__.py` | Merges the mappings from `.nodes` and `.model_nodes` into `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` inside a `try/except` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
 | `nodes.py` | The five base `io.ComfyNode` classes (Load/Close/LLMPrompt/PromptEnhancer/RulesChecker), the base mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
 |`presets.py`|Data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, preset file, min-words and negative-prompt defaults). All dialect text is loaded from `presets/` at import time (`_load_preset`); each spec names its file in `preset_file` so the tests can pin the file as the source of truth.|
-|`presets/`|The single source of truth for all enhancer dialects: twelve `.txt` files, one per model spec. Seven are mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (krea2-t2i, moss-image-sft-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v) - keep those in sync with that package when its presets change. Five are local compact dialects (flux-t2i, zimage-t2i, qwenimage-t2i, minimax-h3-t2v, wan2.2-t2v).|
+|`presets/`|The single source of truth for all enhancer dialects: twelve `.txt` files, one per model spec. Six are mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (krea2-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v) - keep those in sync with that package when its presets change. Six are local dialects: moss-image-sft-t2i (the full MOSS guide, locally modified - no longer a verbatim mirror; do not overwrite it from the source package) plus five local compact dialects (flux-t2i, zimage-t2i, qwenimage-t2i, minimax-h3-t2v, wan2.2-t2v).|
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
 |`server.py`|`LLMServerProcess` (a running server), the lazy `LLMServer` handle (`ensure_live`, lazy `base_url`/`model_name`/`port`), `LLMServerStartError`; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the config-scoped warm cache (`close_server`, `close_all_servers`, `atexit`).|
@@ -193,10 +193,11 @@ resolves a live process on next use.
   spec (Krea 2: 100; Z-Image: 40; MOSS-Image: 40; LTX 2.3: 60; LTX 2.5: 40;
   MiniMax H3 / R2V / Eros Max: 50; no per-model enhancer defaults
   `generate_negative_prompt` on - only the generic `PromptEnhancer` does). The
-  seven mirrored models' dialects (Krea 2, Qwen-Image 2.1 Edit, MOSS-Image,
-  both LTX, both MiniMax R2V variants) are the full dialect guides mirrored
+  six mirrored models' dialects (Krea 2, Qwen-Image 2.1 Edit, both LTX, both
+  MiniMax R2V variants) are the full dialect guides mirrored
   verbatim from `../ComfyUI-PromptEnhancer`, loaded from `presets/*.txt` at
-  import time - keep the files in sync with that package. Same **degrade**
+  import time - keep the files in sync with that package. The MOSS-Image
+  guide is locally maintained (see the `presets/` row above). Same **degrade**
   semantics as `PromptEnhancer`.
   `MODEL_ENHANCER_NODES` maps node_id -> built class. The classes are built via
   `type()` (dynamic class creation); they are ordinary `io.ComfyNode`
