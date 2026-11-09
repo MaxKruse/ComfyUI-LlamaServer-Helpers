@@ -355,6 +355,15 @@ Mocking conventions:
   never run in tests. It yields `(calls, real_fn)`; the one real-process
   integration test (`test_kill_process_tree_kills_wrapper_children`,
   Windows-only) restores `real_fn` via monkeypatch.
+- `test_live_server_chat_completion` (test_client.py) is a live probe: it
+  pings `http://127.0.0.1:8080/v1/models` (the llama.cpp runtime reserved
+  per the port scheme) and, when a server is up, sends one small real
+  completion through `chat_completion` using the loaded model id. It
+  **skips** (does not fail) when the server is down. The :8080 server is
+  the machine's own runtime and is never stopped by the test: a `_LiveProc`
+  stub (`poll() -> None`) makes the lifecycle code see it as running, and
+  the warm-cache teardown only clears the registry. The token budget
+  (256) must cover a reasoning model's `reasoning_content`.
 
 ## Lint / format
 

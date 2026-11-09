@@ -274,3 +274,50 @@ def test_chat_completion_interruptible_interrupt_during_start(
     h = server.LLMServer("llama-server", "/m/a.gguf", 2048)
     with pytest.raises(exc):
         client.chat_completion_interruptible(h, "s", "u", 1)
+
+
+# --- live probe (the machine's llama-server on :8080, when up) --------------
+
+_LIVE_URL = "http://127.0.0.1:8080"
+
+
+class _LiveProc:
+    """A stand-in subprocess for a server we do not own: always alive.
+
+    The server on :8080 belongs to the machine (omp's own runtime): the
+    lifecycle code must see it as running, and the test must never try to
+    stop it.
+    """
+
+    pid = None
+
+    def poll(self):
+        return None
+
+
+def test_live_server_chat_completion():
+    # Probe the machine's real llama-server: when it is up, run one actual
+    # completion through the full client path (payload, HTTP, parse). Skip
+    # when it is down. The test never closes the server: the warm-cache
+    # teardown only clears the registry.
+    from urllib import request
+
+    from conftest import fake_handle
+
+    try:
+        with request.urlopen(_LIVE_URL + "/v1/models", timeout=5) as r:
+            model = json.loads(r.read())["data"][0]["id"]
+    except Exception as e:
+        pytest.skip(f"no llama-server at {_LIVE_URL}: {e}")
+
+    srv = fake_handle(proc=_LiveProc(), base_url=_LIVE_URL, model_name=model, port=8080)
+    # 256 tokens: the loaded model may be a reasoning model whose
+    # reasoning_content eats a small budget before the visible answer.
+    out = client.chat_completion(
+        srv,
+        "You are a helpful assistant.",
+        "Reply with exactly one word: pong",
+        42,
+        max_tokens=256,
+    )
+    assert isinstance(out, str)
