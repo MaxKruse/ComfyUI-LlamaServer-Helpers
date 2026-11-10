@@ -58,10 +58,12 @@ MOSS_IMAGE_SYSTEM = _load_preset("moss-image-sft-t2i.txt")
 
 # Adapted from the released MiniMax-H3-Image-PE T2I prompt assets (MiniMaxAI/
 # MiniMax-H3-Image-PE: prompt/t2i system + task prompts): the user query is
-# the following message instead of the "input_text" placeholder, and the
-# model's two-key JSON output contract is replaced by this node's
-# single-caption contract (the H3-Image model itself rejects negative
-# prompts). Locally maintained.
+# the following message instead of the "input_text" placeholder, the PE's
+# two-key JSON output contract becomes this node's single-caption contract,
+# and the PE's aspect-ratio policy is dropped (the canvas is sized in the
+# ComfyUI workflow). Adds reference-image guidance for the model's editing /
+# reference-input use and explicit NSFW permission. The H3-Image model
+# rejects negative prompts, so none is generated. Locally maintained.
 MINIMAX_H3_IMAGE_SYSTEM = _load_preset("minimax-h3-image-t2i.txt")
 
 # Mirrored verbatim from ../ComfyUI-PromptEnhancer/presets/.
@@ -147,9 +149,11 @@ ENHANCER_SPECS: list[EnhancerSpec] = [
         node_id="MiniMaxH3ImagePromptEnhancer",
         display_name="MiniMax H3-Image Prompt Enhancer (LLM Server)",
         description=(
-            "Enhance a prompt for MiniMax H3-Image (text-to-image): one detailed "
-            "English caption with a privately committed composition, per the "
-            "official H3-Image-PE dialect. No negative prompt - the model rejects them."
+            "Enhance a prompt for MiniMax H3-Image (text-to-image and image "
+            "editing; feed reference images on ref_images for the editing use): "
+            "one detailed English caption, per the official H3-Image-PE dialect. "
+            "Uncensored - NSFW content is described as requested. No negative "
+            "prompt - the model rejects them."
         ),
         system_prompt=MINIMAX_H3_IMAGE_SYSTEM,
         category="LlamaServer/LLM",
