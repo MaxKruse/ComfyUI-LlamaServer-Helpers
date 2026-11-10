@@ -20,8 +20,10 @@ a set of nodes that all share **one** connection to that model:
 - One enhancer per target model, built by a factory from data-driven specs:
   `FluxPromptEnhancer`, `Krea2PromptEnhancer`, `ZImagePromptEnhancer`,
   `QwenImagePromptEnhancer`, `QwenImageEditPromptEnhancer`
-  (Qwen-Image 2.1 i2i), `MossImagePromptEnhancer`, `MiniMaxH3PromptEnhancer`,
-  `MiniMaxH3R2VPromptEnhancer`, `MiniMaxH3ErosMaxPromptEnhancer`,
+  (Qwen-Image 2.1 i2i), `MossImagePromptEnhancer`,
+  `MiniMaxH3ImagePromptEnhancer` (MiniMax H3-Image T2I),
+  `MiniMaxH3PromptEnhancer`, `MiniMaxH3R2VPromptEnhancer`,
+  `MiniMaxH3ErosMaxPromptEnhancer`,
   `Wan22PromptEnhancer`, `Ltx23PromptEnhancer` (LTX 2.3 10Eros),
   `Ltx25PromptEnhancer`
   (same shape as `PromptEnhancer`, but with the model's documented prompt
@@ -46,7 +48,7 @@ Two layers, split deliberately:
   path.
 - **Pure-data module** (`presets.py`): the `EnhancerSpec` NamedTuple plus
   `ENHANCER_SPECS`, the per-model dialect system prompts and quality-gate
-  defaults for the per-model enhancers. Imports only `pathlib`: all twelve
+  defaults for the per-model enhancers. Imports only `pathlib`: all thirteen
   dialect guides live in the `presets/` directory (the single source of truth
   for dialect text) and are loaded at import time. Keep it stdlib-only.
 - **Comfy-dependent modules** (`node_base.py`, `nodes.py`, `model_nodes.py`)
@@ -63,7 +65,7 @@ a new third-party dependency (the node is stdlib-only by design).
 | `__init__.py` | Merges the mappings from `.nodes` and `.model_nodes` into `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` inside a `try/except` guard (empty on failure so the package never breaks startup). Sets `WEB_DIRECTORY = None`. |
 | `nodes.py` | The five base `io.ComfyNode` classes (Load/Close/LLMPrompt/PromptEnhancer/RulesChecker), the base mappings, and `DEFAULT_ENHANCE_SYSTEM`. |
 |`presets.py`|Data: `EnhancerSpec` NamedTuple + `ENHANCER_SPECS` (one entry per target model: dialect system prompt, category, preset file, min-words and negative-prompt defaults). All dialect text is loaded from `presets/` at import time (`_load_preset`); each spec names its file in `preset_file` so the tests can pin the file as the source of truth.|
-|`presets/`|The single source of truth for all enhancer dialects: twelve `.txt` files, one per model spec. Six are mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (krea2-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v) - keep those in sync with that package when its presets change. Six are local dialects: moss-image-sft-t2i (the full MOSS guide, locally modified - no longer a verbatim mirror; do not overwrite it from the source package) plus five local compact dialects (flux-t2i, zimage-t2i, qwenimage-t2i, minimax-h3-t2v, wan2.2-t2v).|
+|`presets/`|The single source of truth for all enhancer dialects: thirteen `.txt` files, one per model spec. Six are mirrored verbatim from `../ComfyUI-PromptEnhancer/presets/` (krea2-t2i, qwenimage2.1-i2i, ltx2.3-10eros-i2v, ltx2.5-i2v, minimax-h3-r2v, minimax-h3-eros-max-r2v) - keep those in sync with that package when its presets change. Seven are local dialects: moss-image-sft-t2i (the full MOSS guide, locally modified - no longer a verbatim mirror; do not overwrite it from the source package), five local compact dialects (flux-t2i, zimage-t2i, qwenimage-t2i, minimax-h3-t2v, wan2.2-t2v), and minimax-h3-image-t2i (adapted from MiniMax's released H3-Image-PE T2I prompt assets - the user query is the following message and the output is the caption only; locally maintained, not a verbatim copy).|
 | `model_nodes.py` | The `_build_enhancer_node(spec)` factory (one `io.ComfyNode` subclass per spec, keyed in `MODEL_ENHANCER_NODES`), the `ImageRulesChecker` node, and the model mappings. |
 | `node_base.py` | `LLMServerType = io.Custom("LLMSERVER")` plus the shared path validators (`resolve_server_path`, `require_model_path`, `optional_absolute_path`) and `collect_images`. |
 |`server.py`|`LLMServerProcess` (a running server), the lazy `LLMServer` handle (`ensure_live`, lazy `base_url`/`model_name`/`port`), `LLMServerStartError`; process lifecycle (`find_free_port`, `build_command`, `start_server`, `wait_for_server`, `discover_model_name`, `_kill_process_tree`, `kill_server` - the latter kills the whole process tree by PID on Windows); the config-scoped warm cache (`close_server`, `close_all_servers`, `atexit`).|
@@ -179,7 +181,8 @@ resolves a live process on next use.
 - **Per-model prompt enhancers** (`FluxPromptEnhancer`, `Krea2PromptEnhancer`,
   `ZImagePromptEnhancer`, `QwenImagePromptEnhancer`,
   `QwenImageEditPromptEnhancer` (Qwen-Image 2.1 i2i),
-  `MossImagePromptEnhancer` under `LlamaServer/LLM`;
+  `MossImagePromptEnhancer`, `MiniMaxH3ImagePromptEnhancer`
+  (MiniMax H3-Image T2I) under `LlamaServer/LLM`;
   `MiniMaxH3PromptEnhancer`, `MiniMaxH3R2VPromptEnhancer`,
   `MiniMaxH3ErosMaxPromptEnhancer`, `Wan22PromptEnhancer`,
   `Ltx23PromptEnhancer` (LTX 2.3 10Eros), `Ltx25PromptEnhancer` under
@@ -197,7 +200,9 @@ resolves a live process on next use.
   MiniMax R2V variants) are the full dialect guides mirrored
   verbatim from `../ComfyUI-PromptEnhancer`, loaded from `presets/*.txt` at
   import time - keep the files in sync with that package. The MOSS-Image
-  guide is locally maintained (see the `presets/` row above). Same **degrade**
+  guide and the MiniMax H3-Image dialect are locally maintained (see the
+  `presets/` row above; the H3-Image one is adapted from MiniMax's released
+  H3-Image-PE prompt assets). Same **degrade**
   semantics as `PromptEnhancer`.
   `MODEL_ENHANCER_NODES` maps node_id -> built class. The classes are built via
   `type()` (dynamic class creation); they are ordinary `io.ComfyNode`
@@ -247,7 +252,7 @@ outputs.
   (relative import). Keep it if you add cross-module imports in those files.
   `server.py` and `node_base.py` use plain imports (server has no relatives;
   node_base only needs `comfy_api`); `presets.py` imports only `pathlib`
-  (to load the mirrored `.txt` dialect guides from `presets/`).
+  (to load the `.txt` dialect guides from `presets/`).
 - **Failure semantics are per-node and intentional** (see above). Do not make
   `LLMPrompt` silent on failure, or make `PromptEnhancer` (or any per-model
   enhancer) raise. `RulesChecker` / `ImageRulesChecker` never raise on a
