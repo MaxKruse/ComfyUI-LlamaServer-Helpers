@@ -8,10 +8,12 @@ per-model quality-gate and negative-prompt defaults that dialect implies.
 
 The ``presets/`` directory next to this module is the single source of truth
 for all dialect text: every spec loads its system prompt from the ``.txt``
-file named in its ``preset_file`` field, at import time. Seven of the twelve
+file named in its ``preset_file`` field, at import time. Six of the thirteen
 files are mirrored verbatim from the sibling ComfyUI-PromptEnhancer package -
-keep those in sync with that package when its presets change. The others are
-local compact dialects for models that package does not cover.
+keep those in sync with that package when its presets change. The rest are
+local dialects: five compact guides for models the package does not cover,
+the locally maintained MOSS-Image guide, and the MiniMax H3-Image dialect
+adapted from MiniMax's released H3-Image-PE prompt assets.
 
 The module needs only the standard library (``pathlib``) and stays testable
 outside the ComfyUI runtime. The node factory in ``model_nodes.py`` builds one
@@ -53,6 +55,14 @@ WAN22_SYSTEM = _load_preset("wan2.2-t2v.txt")
 
 # Locally maintained (no longer a verbatim mirror of the source package).
 MOSS_IMAGE_SYSTEM = _load_preset("moss-image-sft-t2i.txt")
+
+# Adapted from the released MiniMax-H3-Image-PE T2I prompt assets (MiniMaxAI/
+# MiniMax-H3-Image-PE: prompt/t2i system + task prompts): the user query is
+# the following message instead of the "input_text" placeholder, and the
+# model's two-key JSON output contract is replaced by this node's
+# single-caption contract (the H3-Image model itself rejects negative
+# prompts). Locally maintained.
+MINIMAX_H3_IMAGE_SYSTEM = _load_preset("minimax-h3-image-t2i.txt")
 
 # Mirrored verbatim from ../ComfyUI-PromptEnhancer/presets/.
 QWEN_IMAGE_EDIT_SYSTEM = _load_preset("qwenimage2.1-i2i.txt")
@@ -132,6 +142,21 @@ ENHANCER_SPECS: list[EnhancerSpec] = [
         system_prompt=QWEN_IMAGE_EDIT_SYSTEM,
         category="LlamaServer/LLM",
         preset_file="qwenimage2.1-i2i.txt",
+    ),
+    EnhancerSpec(
+        node_id="MiniMaxH3ImagePromptEnhancer",
+        display_name="MiniMax H3-Image Prompt Enhancer (LLM Server)",
+        description=(
+            "Enhance a prompt for MiniMax H3-Image (text-to-image): one detailed "
+            "English caption with a privately committed composition, per the "
+            "official H3-Image-PE dialect. No negative prompt - the model rejects them."
+        ),
+        system_prompt=MINIMAX_H3_IMAGE_SYSTEM,
+        category="LlamaServer/LLM",
+        preset_file="minimax-h3-image-t2i.txt",
+        # The dialect targets inspectable content, not word count (its own
+        # example caption is ~25 words), so the default 25-word floor only
+        # rejects lazy under-expansions.
     ),
     EnhancerSpec(
         node_id="Ltx23PromptEnhancer",
